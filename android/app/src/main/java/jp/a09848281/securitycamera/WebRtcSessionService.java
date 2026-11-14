@@ -127,6 +127,7 @@ public class WebRtcSessionService extends Service {
     private String sessionId = "";
 
     private ScheduledFuture<?> signalPollFuture;
+    private ScheduledFuture<?> offerRenewFuture;
     private ScheduledFuture<?> telemetryFuture;
     private ScheduledFuture<?> watchdogFuture;
     private ScheduledFuture<?> scheduleFuture;
@@ -319,6 +320,23 @@ public class WebRtcSessionService extends Service {
         }, offerConstraints);
 
         signalPollFuture = io.scheduleWithFixedDelay(this::pollSignals, 1, 2, TimeUnit.SECONDS);
+        offerRenewFuture = io.schedule(() -> {
+            DataChannel channel = controlChannel;
+            if (!serviceActive || (channel != null && channel.state() == DataChannel.State.OPEN)) return;
+            try {
+                startup.execute(() -> {
+                    DataChannel current = controlChannel;
+                    if (!serviceActive || (current != null && current.state() == DataChannel.State.OPEN)) return;
+                    stopMediaOnlyInternal(false);
+                    try {
+                        createPeerAndOffer();
+                        notifyStatus("未接続Offerを更新しました。Web画面から接続できます。");
+                    } catch (Exception error) {
+                        fail("RTC待機情報の更新に失敗しました: " + error.getMessage());
+                    }
+                });
+            } catch (Exception ignored) {}
+        }, 8, TimeUnit.MINUTES);
     }
 
     private void observeControlChannel(DataChannel channel) {
@@ -365,6 +383,10 @@ public class WebRtcSessionService extends Service {
         if (poll != null) {
             poll.cancel(false);
             signalPollFuture = null;
+        }
+        if (offerRenewFuture != null) {
+            offerRenewFuture.cancel(false);
+            offerRenewFuture = null;
         }
         notifyStatus("RTC待機接続済み。カメラ・マイクは停止中です。");
         sendDataMessage("STATUS", collectStatus());
@@ -1132,6 +1154,8 @@ public class WebRtcSessionService extends Service {
     private void closePeerOnly() {
         if (signalPollFuture != null) signalPollFuture.cancel(false);
         signalPollFuture = null;
+        if (offerRenewFuture != null) offerRenewFuture.cancel(false);
+        offerRenewFuture = null;
         if (telemetryFuture != null) telemetryFuture.cancel(false);
         telemetryFuture = null;
 
@@ -1239,6 +1263,7 @@ public class WebRtcSessionService extends Service {
         serviceActive = false;
         mediaActive = false;
         if (signalPollFuture != null) signalPollFuture.cancel(true);
+        if (offerRenewFuture != null) offerRenewFuture.cancel(true);
         if (telemetryFuture != null) telemetryFuture.cancel(true);
         if (watchdogFuture != null) watchdogFuture.cancel(true);
         if (scheduleFuture != null) scheduleFuture.cancel(true);
