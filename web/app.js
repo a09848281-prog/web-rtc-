@@ -68,7 +68,7 @@ function releasePeer(){
 }
 function endView(sendBye=true,stopAndroid=false){
  const sid=state.sessionId;if(sendBye&&sid&&state.selected)signal("bye","",sid).catch(()=>{});
- stopTimers();releasePeer();state.connecting=false;state.reconnectTried=false;badge("未接続");connection("待機中");
+ stopPtt();stopTimers();releasePeer();state.connecting=false;state.reconnectTried=false;badge("未接続");connection("待機中");
  if(stopAndroid&&state.selected){state.everRequested=false;command("stop_session").catch(()=>{});}
 }
 async function ensureMic(){
