@@ -151,6 +151,10 @@ public class WebRtcSessionService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_STOP.equals(action)) {
+            if (!serviceActive) {
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
             stopMediaOnly();
             return START_STICKY;
         }
@@ -710,7 +714,8 @@ public class WebRtcSessionService extends Service {
                 notifyStatus("スケジュールの開始時刻です。カメラ・マイクの起動を試みます。");
                 startMediaOnly();
             }
-            if (end - current == 5 && !dayKey.equals(prefs.getString("scheduleEndNoticeDay", ""))) {
+            if (current >= end - 5 && current < end - 4 &&
+                !dayKey.equals(prefs.getString("scheduleEndNoticeDay", ""))) {
                 prefs.edit().putString("scheduleEndNoticeDay", dayKey).apply();
                 notifyStatus("スケジュール終了まで5分です。");
             }
