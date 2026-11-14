@@ -298,33 +298,76 @@ public class MainActivity extends Activity {
     }
 
     static JSONObject post(String endpoint, JSONObject body) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection)new URL(endpoint).openConnection();
-        connection.setRequestMethod("POST");
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(15000);
-        connection.setDoOutput(true);
-        connection.setUseCaches(false);
-        connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+        // Apps Script ContentService responds with a 302 to a one-time
+        // script.googleusercontent.com URL. Handle that redirect explicitly:
+        // some Android HTTP stacks incorrectly replay a POST as GET or loop.
+        HttpURLConnection connection = null;
         try {
+            URL current = new URL(endpoint);
+            connection = (HttpURLConnection) current.openConnection();
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(20000);
+            connection.setReadTimeout(25000);
+            connection.setDoOutput(true);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(body.toString().getBytes(StandardCharsets.UTF_8));
                 output.flush();
             }
+
             int code = connection.getResponseCode();
-            InputStream stream = code >= 200 && code < 400 ? connection.getInputStream() : connection.getErrorStream();
-            if (stream == null) throw new Exception("GAS HTTPエラー: " + code);
+            int redirects = 0;
+            while (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String location = connection.getHeaderField("Location");
+                if (location == null || location.trim().isEmpty())
+                    throw new Exception("GAS応答の転送先がありません（HTTP " + code + "）。");
+                URL next = new URL(current, location);
+                if (next.toString().contains("script.google.com/macros/s/") &&
+                    next.getPath().endsWith("/exec")) {
+                    throw new Exception("GAS応答が元のURLへ戻りました。Apps Scriptの応答転送エラーです。少し待って再試行してください。");
+                }
+                if (++redirects > 5)
+                    throw new Exception("GAS応答の転送回数が上限を超えました。");
+                connection.disconnect();
+                current = next;
+                connection = (HttpURLConnection) current.openConnection();
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(20000);
+                connection.setReadTimeout(25000);
+                connection.setUseCaches(false);
+                code = connection.getResponseCode();
+            }
+
+            InputStream stream = (code >= 200 && code < 300)
+                ? connection.getInputStream() : connection.getErrorStream();
+            if (stream == null)
+                throw new Exception("GAS HTTPエラー: " + code);
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (InputStream input = stream) {
                 byte[] buffer = new byte[4096];
                 int count;
                 while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
             }
-            JSONObject response = new JSONObject(bytes.toString("UTF-8"));
-            if (code < 200 || code >= 400) throw new Exception("GAS HTTP " + code);
-            if (!response.optBoolean("ok")) throw new Exception(response.optString("error", "GAS APIエラー"));
+            String responseText = bytes.toString("UTF-8").trim();
+            if (code < 200 || code >= 300)
+                throw new Exception("GAS HTTP " + code + "。GASのデプロイ状態・アクセス権限を確認してください。");
+            JSONObject response;
+            try {
+                response = new JSONObject(responseText);
+            } catch (Exception parseError) {
+                String preview = responseText.length() > 160
+                    ? responseText.substring(0, 160) : responseText;
+                throw new Exception("GASからJSON以外の応答が返りました。デプロイURLまたは公開設定を確認してください。応答: " +
+                    preview.replaceAll("\\s+", " "));
+            }
+            if (!response.optBoolean("ok"))
+                throw new Exception(response.optString("error", "GAS APIエラー"));
             return response;
         } finally {
-            connection.disconnect();
+            if (connection != null) connection.disconnect();
         }
     }
 
