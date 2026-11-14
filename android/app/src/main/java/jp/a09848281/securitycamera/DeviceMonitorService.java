@@ -255,6 +255,14 @@ public class DeviceMonitorService extends Service {
             int current = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
             int from = parseMinutes(start), to = parseMinutes(end);
             boolean active = from < to ? current >= from && current < to : current >= from || current < to;
+            int minutesToEnd = from < to ? to - current : (current >= from ? 1440 - current + to : to - current);
+            if (active && minutesToEnd > 0 && minutesToEnd <= 5) {
+                String warningKey = now.get(Calendar.YEAR) + "-" + now.get(Calendar.DAY_OF_YEAR) + "-" + end;
+                if (!warningKey.equals(prefs.getString("scheduleWarningKey", ""))) {
+                    prefs.edit().putString("scheduleWarningKey", warningKey).apply();
+                    update("監視スケジュール終了まで約5分です。", false);
+                }
+            }
             boolean wasActive = prefs.getBoolean("scheduleActive", false);
             if (active && !wasActive) {
                 prefs.edit().putBoolean("scheduleActive", true).apply();
