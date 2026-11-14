@@ -171,6 +171,7 @@ $("endViewBtn").addEventListener("click",()=>{endView(true,true);status("Android
 $("switchCamera").addEventListener("click",async()=>{try{await command("switch_camera");status("カメラ切替要求をAndroidへ送信しました。");}catch(e){status(e.message);}});
 $("statusRequest").addEventListener("click",async()=>{try{await command("request_status");await refresh();status("端末状態の更新を要求しました。");}catch(e){status(e.message);}});
 $("muteRemote").addEventListener("click",()=>{state.muted=!state.muted;video.muted=state.muted;$("muteRemote").textContent=state.muted?"🔇 ミュート解除":"🔊 音声ミュート";});
+$("enablePlayback").addEventListener("click",async()=>{try{video.muted=state.muted;await video.play();status("映像・音声の再生を有効にしました。");}catch(e){status("再生できません: "+e.message);}});
 $("fullscreen").addEventListener("click",async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $("videoFrame").requestFullscreen();}catch(e){status("全画面表示に対応していません: "+e.message);}});
 $("requestMic").addEventListener("click",async()=>{try{await ensureMic();$("pttButton").disabled=!state.pttSender;status("マイクの使用を許可しました。PTTボタンを押している間だけ送信します。");}catch(e){setMicState("許可が必要");$("pttStatus").textContent=e.message;}});
 const ptt=$("pttButton");
