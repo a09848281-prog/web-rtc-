@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 public class WebRtcSessionService extends Service {
     public static final String ACTION_START = "jp.a09848281.securitycamera.START_MEDIA";
     public static final String ACTION_STOP = "jp.a09848281.securitycamera.STOP_MEDIA";
+    public static final String ACTION_COMMAND = "jp.a09848281.securitycamera.REMOTE_COMMAND";
     private static final String CHANNEL = "wsc_media";
     private static final int NOTIFICATION_ID = 42;
 
@@ -59,6 +60,14 @@ public class WebRtcSessionService extends Service {
     private AudioSource audioSource;
     private AudioTrack audioTrack;
     private VideoTrack videoTrack;
+    private RtpSender videoSender;
+    private volatile long lastTelemetryWriteAt = 0L;
+    private volatile long lastFrameAt = 0L;
+    private volatile int lastFrameWidth = 0;
+    private volatile int lastFrameHeight = 0;
+    private volatile int observedFps = 0;
+    private volatile String networkMode = "auto";
+    private volatile String powerMode = "auto";
     private PowerManager.WakeLock wakeLock;
     private String sessionId = "";
 
@@ -72,6 +81,10 @@ public class WebRtcSessionService extends Service {
         if (ACTION_STOP.equals(intent.getAction())) {
             sendByeAndStop();
             return START_NOT_STICKY;
+        }
+        if (ACTION_COMMAND.equals(intent.getAction())) {
+            handleRemoteCommand(intent);
+            return START_STICKY;
         }
         if (ACTION_START.equals(intent.getAction()) && !active) {
             beginSession();
@@ -191,7 +204,13 @@ public class WebRtcSessionService extends Service {
                 @Override public void onRemoveStream(MediaStream stream) {}
                 @Override public void onDataChannel(DataChannel channel) {}
                 @Override public void onRenegotiationNeeded() {}
-                @Override public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {}
+                @Override public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {
+                    MediaStreamTrack remoteTrack = receiver.track();
+                    if (remoteTrack instanceof AudioTrack) {
+                        ((AudioTrack) remoteTrack).setEnabled(true);
+                        notifyStatus("WebからのPTT音声を受信しました。Androidスピーカーへ出力します。");
+                    }
+                }
             });
             if (peer == null) throw new Exception("WebRTC接続を作成できません。");
 
@@ -213,9 +232,25 @@ public class WebRtcSessionService extends Service {
             cameraCapturer.initialize(textureHelper, getApplicationContext(), videoSource.getCapturerObserver());
             videoTrack = factory.createVideoTrack("wsc_video", videoSource);
             videoTrack.setEnabled(true);
-            peer.addTrack(videoTrack, Collections.singletonList("wsc_stream"));
+            videoTrack.addSink(frame -> {
+                lastFrameAt = System.currentTimeMillis();
+                lastFrameWidth = frame.getBuffer().getWidth();
+                lastFrameHeight = frame.getBuffer().getHeight();
+                long now = System.currentTimeMillis();
+                if (now - lastTelemetryWriteAt >= 5000L) {
+                    lastTelemetryWriteAt = now;
+                    getSharedPreferences("wsc", MODE_PRIVATE).edit()
+                        .putInt("videoWidth", lastFrameWidth)
+                        .putInt("videoHeight", lastFrameHeight)
+                        .putLong("lastVideoFrameAt", lastFrameAt)
+                        .apply();
+                }
+            });
+            videoSender = peer.addTrack(videoTrack, Collections.singletonList("wsc_stream"));
             startupStage = "カメラ映像取得開始";
-            cameraCapturer.startCapture(640, 480, 15);
+            int[] quality = calculateQuality(prefs);
+            cameraCapturer.startCapture(quality[0], quality[1], quality[2]);
+            applySenderBitrate(quality[3]);
 
             startupStage = "接続情報作成";
             MediaConstraints offerConstraints = new MediaConstraints();
@@ -247,6 +282,84 @@ public class WebRtcSessionService extends Service {
             fail("開始失敗（" + startupStage + "）: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
         } catch (LinkageError error) {
             fail("ネイティブ処理失敗（" + startupStage + "）: " + error);
+        }
+    }
+
+    private void handleRemoteCommand(Intent intent) {
+        String command = intent.getStringExtra("command");
+        String raw = intent.getStringExtra("payload");
+        try {
+            JSONObject payload = new JSONObject(raw == null ? "{}" : raw);
+            if ("switch_camera".equals(command)) {
+                if (!(cameraCapturer instanceof CameraVideoCapturer) || !active) {
+                    notifyStatus("カメラ切替は映像セッション接続中のみ使用できます。");
+                    return;
+                }
+                ((CameraVideoCapturer) cameraCapturer).switchCamera(new CameraVideoCapturer.CameraSwitchHandler() {
+                    @Override public void onCameraSwitchDone(boolean isFrontCamera) {
+                        notifyStatus(isFrontCamera ? "フロントカメラに切り替えました。" : "リアカメラに切り替えました。");
+                    }
+                    @Override public void onCameraSwitchError(String errorDescription) {
+                        notifyStatus("カメラ切替に失敗しました: " + errorDescription);
+                    }
+                });
+            } else if ("set_modes".equals(command)) {
+                networkMode = payload.optString("networkMode", "auto");
+                powerMode = payload.optString("powerMode", "auto");
+                getSharedPreferences("wsc", MODE_PRIVATE).edit()
+                    .putString("networkMode", networkMode).putString("powerMode", powerMode).apply();
+                int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
+                if (cameraCapturer != null && active) {
+                    try { cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]); }
+                    catch (Exception e) { notifyStatus("画質変更に失敗しました。現在の設定を維持します。"); }
+                }
+                applySenderBitrate(quality[3]);
+                notifyStatus("通信・電力モードを適用しました。");
+            }
+        } catch (Exception error) {
+            notifyStatus("遠隔設定を適用できません: " + error.getMessage());
+        }
+    }
+
+    private int[] calculateQuality(SharedPreferences prefs) {
+        String network = prefs.getString("networkMode", networkMode);
+        String power = prefs.getString("powerMode", powerMode);
+        int width = 1280, height = 720, fps = 24, bitrate = 1400000;
+        if ("wifi".equals(network)) { width = 1920; height = 1080; fps = 30; bitrate = 2500000; }
+        else if ("mobile".equals(network)) { width = 640; height = 360; fps = 15; bitrate = 500000; }
+        if ("eco".equals(power)) { width = Math.min(width, 640); height = Math.min(height, 480); fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000); }
+        else if ("normal".equals(power)) { width = Math.min(width, 1280); height = Math.min(height, 720); fps = Math.min(fps, 24); bitrate = Math.min(bitrate, 1400000); }
+        else if ("performance".equals(power)) { width = Math.min(width, 1920); height = Math.min(height, 1080); fps = Math.min(fps, 30); }
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                PowerManager pm = getSystemService(PowerManager.class);
+                if (pm != null && pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_MODERATE) {
+                    width = Math.min(width, 960); height = Math.min(height, 540); fps = Math.min(fps, 15); bitrate = Math.min(bitrate, 850000);
+                }
+            }
+            Intent battery = registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (battery != null) {
+                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                if (scale > 0 && level * 100 / scale <= 20) {
+                    width = Math.min(width, 640); height = Math.min(height, 480); fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000);
+                }
+            }
+        } catch (Exception ignored) {}
+        return new int[]{width, height, fps, bitrate};
+    }
+
+    private void applySenderBitrate(int maxBitrate) {
+        try {
+            if (videoSender == null) return;
+            RtpParameters parameters = videoSender.getParameters();
+            for (RtpParameters.Encoding encoding : parameters.encodings) {
+                encoding.maxBitrateBps = maxBitrate;
+                encoding.maxFramerate = 30;
+            }
+            videoSender.setParameters(parameters);
+        } catch (Exception error) {
+            notifyStatus("ビットレート調整は端末側で適用できませんでした。");
         }
     }
 
@@ -476,7 +589,11 @@ public class WebRtcSessionService extends Service {
         }
         if (peer != null) try { peer.dispose(); } catch (Exception ignored) {}
         if (audioTrack != null) try { audioTrack.dispose(); } catch (Exception ignored) {}
-        if (videoTrack != null) try { videoTrack.dispose(); } catch (Exception ignored) {}
+        if (videoTrack != null) {
+            try { videoTrack.removeSink(null); } catch (Exception ignored) {}
+            try { videoTrack.dispose(); } catch (Exception ignored) {}
+        }
+        videoSender = null;
         if (videoSource != null) try { videoSource.dispose(); } catch (Exception ignored) {}
         if (audioSource != null) try { audioSource.dispose(); } catch (Exception ignored) {}
         if (textureHelper != null) try { textureHelper.dispose(); } catch (Exception ignored) {}
