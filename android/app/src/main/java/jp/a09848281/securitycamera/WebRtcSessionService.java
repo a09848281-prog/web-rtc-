@@ -420,6 +420,9 @@ public class WebRtcSessionService extends Service {
             case "SWITCH_CAMERA":
                 switchCamera();
                 break;
+            case "SET_MIC_MUTE":
+                setAndroidMicMuted(payload.optBoolean("muted", false));
+                break;
             case "SET_MODES":
                 applyModes(payload);
                 break;
@@ -492,7 +495,8 @@ public class WebRtcSessionService extends Service {
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl", "true"));
             audioSource = factory.createAudioSource(audioConstraints);
             audioTrack = factory.createAudioTrack("wsc_audio_" + System.currentTimeMillis(), audioSource);
-            audioTrack.setEnabled(true);
+            boolean initiallyMuted = getSharedPreferences("wsc", MODE_PRIVATE).getBoolean("androidMicMuted", false);
+            audioTrack.setEnabled(!initiallyMuted);
             if (audioSender == null || !audioSender.setTrack(audioTrack, false))
                 throw new IllegalStateException("AndroidマイクトラックをRTCへ接続できません。");
             if (remoteAudioTrack != null) remoteAudioTrack.setEnabled(true);
@@ -612,6 +616,13 @@ public class WebRtcSessionService extends Service {
             audioManager = null;
         }
         cameraStartAt = 0L;
+    }
+
+    private void setAndroidMicMuted(boolean muted) {
+        getSharedPreferences("wsc", MODE_PRIVATE).edit().putBoolean("androidMicMuted", muted).apply();
+        if (audioTrack != null) audioTrack.setEnabled(mediaActive && !muted);
+        sendDataMessage("NOTICE", messagePayload(muted ? "Androidマイクをミュートしました。" : "Androidマイクのミュートを解除しました。"));
+        sendDataMessage("STATUS", collectStatus());
     }
 
     private void switchCamera() {
@@ -782,6 +793,7 @@ public class WebRtcSessionService extends Service {
             result.put("height", lastFrameHeight);
             result.put("networkRttMs", networkRttMs >= 0 ? networkRttMs : JSONObject.NULL);
             result.put("networkLossPercent", networkLossPercent >= 0 ? networkLossPercent : JSONObject.NULL);
+            result.put("micMuted", getSharedPreferences("wsc", MODE_PRIVATE).getBoolean("androidMicMuted", false));
             result.put("mediaActive", mediaActive);
             result.put("standby", serviceActive);
         } catch (Exception ignored) {}
