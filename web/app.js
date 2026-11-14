@@ -38,7 +38,7 @@ function displayTelemetry(s={}){
  val("chargingValue",s.charging===true?"充電中":s.charging===false?"未充電":"取得不可");
  const t=Number(s.batteryTempC);val("temperatureValue",(Number.isFinite(t)?t.toFixed(1)+"℃":"取得不可")+" / "+(s.thermalStatus||"取得不可"));
  val("networkValue",s.networkType||"取得不可");
- const cpu=Number(s.cpuLoadPct),mem=Number(s.memoryUsedMb),total=Number(s.memoryTotalMb);
+ const cpu=s.cpuLoadPct===null||s.cpuLoadPct===undefined?NaN:Number(s.cpuLoadPct),mem=Number(s.memoryUsedMb),total=Number(s.memoryTotalMb);
  val("loadValue",(Number.isFinite(cpu)?Math.round(cpu)+"%":"取得不可")+" / "+(Number.isFinite(mem)&&Number.isFinite(total)?Math.round(mem)+"/"+Math.round(total)+"MB":"取得不可"));
  const fps=Number(s.fps),w=Number(s.width),h=Number(s.height);
  val("videoValue",(Number.isFinite(fps)?fps+"fps":"取得不可")+" / "+(w>0&&h>0?w+"×"+h:"取得不可"));
