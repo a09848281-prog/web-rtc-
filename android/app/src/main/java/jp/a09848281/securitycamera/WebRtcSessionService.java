@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
 import android.os.Build;
+import android.media.AudioManager;
 import android.os.BatteryManager;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -79,6 +80,9 @@ public class WebRtcSessionService extends Service {
     private volatile String networkMode = "auto";
     private volatile String powerMode = "auto";
     private PowerManager.WakeLock wakeLock;
+    private AudioManager audioManager;
+    private int previousAudioMode = AudioManager.MODE_NORMAL;
+    private boolean previousSpeakerphone = false;
     private String sessionId = "";
 
     @Override public void onCreate() {
@@ -224,6 +228,15 @@ public class WebRtcSessionService extends Service {
                 }
             });
             if (peer == null) throw new Exception("WebRTC接続を作成できません。");
+
+            startupStage = "音声出力ルート準備";
+            audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+            if (audioManager != null) {
+                previousAudioMode = audioManager.getMode();
+                previousSpeakerphone = audioManager.isSpeakerphoneOn();
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                audioManager.setSpeakerphoneOn(true);
+            }
 
             startupStage = "マイク初期化";
             MediaConstraints audioConstraints = new MediaConstraints();
@@ -684,6 +697,10 @@ public class WebRtcSessionService extends Service {
         if (factory != null) try { factory.dispose(); } catch (Exception ignored) {}
         if (egl != null) try { egl.release(); } catch (Exception ignored) {}
         if (wakeLock != null && wakeLock.isHeld()) try { wakeLock.release(); } catch (Exception ignored) {}
+        if (audioManager != null) {
+            try { audioManager.setSpeakerphoneOn(previousSpeakerphone); } catch (Exception ignored) {}
+            try { audioManager.setMode(previousAudioMode); } catch (Exception ignored) {}
+        }
         stopForeground(true);
         super.onDestroy();
     }
