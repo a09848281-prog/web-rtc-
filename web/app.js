@@ -117,8 +117,14 @@
       };
       const listener = (event) => {
         const packet = event.data;
-        if (event.source !== frame.contentWindow || !packet ||
-            packet.channel !== "rdc-api" || packet.requestId !== requestId) return;
+        // HtmlService runs the returned HTML inside Google's sandbox iframe.
+        // window.top.postMessage() therefore arrives from a nested frame, not
+        // necessarily the form-target iframe's direct contentWindow.
+        // The cryptographically random requestId binds this response to this
+        // pending request; checking event.source here incorrectly drops valid
+        // GAS responses and causes a 20-second timeout.
+        if (!packet || packet.channel !== "rdc-api" ||
+            packet.requestId !== requestId) return;
         const result = packet.response;
         if (!result || typeof result !== "object") {
           finish(reject, new Error("GASから不正な応答が返りました。"));
