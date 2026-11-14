@@ -1,7 +1,7 @@
 (()=>{"use strict";
 const $=id=>document.getElementById(id),video=$("remoteVideo");
 const urlInput=$("gasUrl"),apiState=$("apiState"),devices=$("devices"),message=$("message");
-const state={selected:null,pc:null,sessionId:null,pollTimer:null,statsTimer:null,listTimer:null,darkTimer:null,connecting:false,remoteStream:null,micStream:null,micTrack:null,pttSender:null,pttHeld:false,muted:false,lastBytes:0,lastFrames:0,lastFrameAt:0,reconnectTried:false};
+const state={selected:null,pc:null,sessionId:null,pollTimer:null,statsTimer:null,listTimer:null,darkTimer:null,connecting:false,everRequested:false,remoteStream:null,micStream:null,micTrack:null,pttSender:null,pttHeld:false,muted:false,lastBytes:0,lastFrames:0,lastFrameAt:0,reconnectTried:false};
 const savedUrl=localStorage.getItem("wsc_gas_url")||window.RDC_CONFIG?.GAS_URL||"";
 urlInput.value=savedUrl;video.autoplay=true;video.playsInline=true;
 let deviceCache=[];
@@ -48,7 +48,7 @@ function displayTelemetry(s={}){
  else warning.hidden=true;
 }
 function selectDevice(d){
- if(state.selected?.deviceId!==d.deviceId)endView(true,true);
+ if(state.selected?.deviceId!==d.deviceId){endView(true,true);state.everRequested=false;}
  state.selected=d;$("controlPanel").hidden=false;$("selectedName").textContent=d.name||"端末操作";$("viewerTitle").textContent=d.name||"ライブ映像";$("viewerSub").textContent="登録済みAndroid。接続ボタンから接続要求を送信できます。";
  displayTelemetry(d.status||{});render(deviceCache);status("接続ボタンを押すとAndroidに接続要求を送信し、応答後にWebRTCを開始します。");
 }
@@ -69,7 +69,7 @@ function releasePeer(){
 function endView(sendBye=true,stopAndroid=false){
  const sid=state.sessionId;if(sendBye&&sid&&state.selected)signal("bye","",sid).catch(()=>{});
  stopTimers();releasePeer();state.connecting=false;state.reconnectTried=false;badge("未接続");connection("待機中");
- if(stopAndroid&&state.selected)command("stop_session").catch(()=>{});
+ if(stopAndroid&&state.selected){state.everRequested=false;command("stop_session").catch(()=>{});}
 }
 async function ensureMic(){
  if(state.micTrack&&state.micTrack.readyState==="live")return state.micTrack;
@@ -82,9 +82,12 @@ async function ensureMic(){
 }
 function stopPtt(){state.pttHeld=false;if(state.micTrack)state.micTrack.enabled=false;$("pttButton").classList.remove("active");$("pttButton").textContent="🎙 押して話す";$("pttStatus").textContent="送信停止中";}
 async function startPtt(){
- if(!state.pttSender||!state.pc||state.pc.connectionState!=="connected"){status("先にAndroidとの通話を接続してください。");return;}
- try{const track=await ensureMic();track.enabled=true;state.pttHeld=true;$("pttButton").classList.add("active");$("pttButton").textContent="🎙 話しています（離すと停止）";$("pttStatus").textContent="Webマイク音声をAndroidへ送信中";}
- catch(e){$("pttStatus").textContent=e.message;setMicState("許可が必要");}
+ if(!state.pttSender||!state.pc||state.pc.connectionState!=="connected"){state.pttHeld=false;status("先にAndroidとの通話を接続してください。");return;}
+ try{
+  const track=await ensureMic();
+  if(!state.pttHeld){track.enabled=false;return;}
+  track.enabled=true;$("pttButton").classList.add("active");$("pttButton").textContent="🎙 話しています（離すと停止）";$("pttStatus").textContent="Webマイク音声をAndroidへ送信中";
+ }catch(e){state.pttHeld=false;$("pttStatus").textContent=e.message;setMicState("許可が必要");}
 }
 async function pollSignals(){
  const pc=state.pc;if(!pc||!state.selected||!state.sessionId)return;
@@ -110,13 +113,14 @@ function startDarkCheck(){
 async function connect(forceRestart=false){
  if(!state.selected){status("先にAndroid端末を選択してください。");return;}
  if(state.connecting)return;
- const restart=forceRestart||!!state.sessionId||!!state.pc;
+ const restart=forceRestart||state.everRequested||!!state.sessionId||!!state.pc;
  const oldSession=state.sessionId;
  if(oldSession)signal("bye","",oldSession).catch(()=>{});
  stopTimers();releasePeer();state.connecting=true;badge("接続要求中");connection("Androidへ接続要求中");
  status(restart?"再接続要求を送信しています。":"Androidへ自動接続要求を送信しています。OSがカメラ・マイクの起動を許可すると映像が開始します。");
  try{
   await command(restart?"restart_session":"start_session");
+  state.everRequested=true;
   const iceServers=[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}];
   const pc=new RTCPeerConnection({iceServers,bundlePolicy:"max-bundle",rtcpMuxPolicy:"require",iceCandidatePoolSize:4});
   state.pc=pc;state.remoteStream=new MediaStream();
@@ -170,7 +174,7 @@ $("muteRemote").addEventListener("click",()=>{state.muted=!state.muted;video.mut
 $("fullscreen").addEventListener("click",async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $("videoFrame").requestFullscreen();}catch(e){status("全画面表示に対応していません: "+e.message);}});
 $("requestMic").addEventListener("click",async()=>{try{await ensureMic();$("pttButton").disabled=!state.pttSender;status("マイクの使用を許可しました。PTTボタンを押している間だけ送信します。");}catch(e){setMicState("許可が必要");$("pttStatus").textContent=e.message;}});
 const ptt=$("pttButton");
-ptt.addEventListener("pointerdown",e=>{e.preventDefault();startPtt();});ptt.addEventListener("pointerup",stopPtt);ptt.addEventListener("pointercancel",stopPtt);ptt.addEventListener("pointerleave",()=>{if(state.pttHeld)stopPtt();});
+ptt.addEventListener("pointerdown",e=>{e.preventDefault();state.pttHeld=true;startPtt();});ptt.addEventListener("pointerup",stopPtt);window.addEventListener("pointerup",stopPtt);ptt.addEventListener("pointercancel",stopPtt);ptt.addEventListener("pointerleave",()=>{if(state.pttHeld)stopPtt();});
 window.addEventListener("blur",stopPtt);document.addEventListener("visibilitychange",()=>{if(document.hidden)stopPtt();});
 $("applyModes").addEventListener("click",async()=>{try{await command("set_modes",{networkMode:$("networkMode").value,powerMode:$("powerMode").value});status("通信・電力モードをAndroidへ送信しました。端末が受信すると適用します。");}catch(e){status(e.message);}});
 $("saveSchedule").addEventListener("click",async()=>{try{const start=$("scheduleStart").value,end=$("scheduleEnd").value;if(!start||!end||start===end)throw Error("開始時刻と終了時刻を確認してください。");await command("set_schedule",{enabled:$("scheduleEnabled").checked,days:$("scheduleDays").value,start,end});status("スケジュールをAndroidへ送信しました。自動起動はAndroid OSの制限に従います。");}catch(e){status(e.message);}});
