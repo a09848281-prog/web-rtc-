@@ -1,6 +1,7 @@
 package jp.a09848281.securitycamera;
 
-import android.app.Activity;
+import android.Manifest;
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,69 +9,108 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
-import android.os.Build;
 import android.media.AudioManager;
-import android.os.BatteryManager;
-import android.os.IBinder;
-import android.os.PowerManager;
-import android.Manifest;
-import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.os.BatteryManager;
+import android.os.Build;
+import android.os.Debug;
+import android.os.IBinder;
+import android.os.PowerManager;
 
-import org.json.JSONObject;
 import org.json.JSONArray;
-import org.webrtc.*;
+import org.json.JSONObject;
+import org.webrtc.AudioSource;
+import org.webrtc.AudioTrack;
 import org.webrtc.Camera1Enumerator;
+import org.webrtc.Camera2Enumerator;
+import org.webrtc.CameraEnumerator;
+import org.webrtc.CameraVideoCapturer;
+import org.webrtc.DataChannel;
+import org.webrtc.DefaultVideoDecoderFactory;
+import org.webrtc.DefaultVideoEncoderFactory;
+import org.webrtc.EglBase;
+import org.webrtc.IceCandidate;
+import org.webrtc.MediaConstraints;
+import org.webrtc.MediaStream;
+import org.webrtc.MediaStreamTrack;
+import org.webrtc.PeerConnection;
+import org.webrtc.PeerConnectionFactory;
+import org.webrtc.RtpParameters;
+import org.webrtc.RtpSender;
+import org.webrtc.RtpTransceiver;
+import org.webrtc.SessionDescription;
+import org.webrtc.SdpObserver;
+import org.webrtc.SurfaceTextureHelper;
+import org.webrtc.VideoCapturer;
+import org.webrtc.VideoFrame;
+import org.webrtc.VideoSink;
+import org.webrtc.VideoSource;
+import org.webrtc.VideoTrack;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 public class WebRtcSessionService extends Service {
-    public static final String ACTION_START = "jp.a09848281.securitycamera.START_MEDIA";
+    public static final String ACTION_START = "jp.a09848281.securitycamera.START_STANDBY";
     public static final String ACTION_STOP = "jp.a09848281.securitycamera.STOP_MEDIA";
-    public static final String ACTION_COMMAND = "jp.a09848281.securitycamera.REMOTE_COMMAND";
+    public static final String ACTION_STOP_WAIT = "jp.a09848281.securitycamera.STOP_WAIT";
     private static final String CHANNEL = "wsc_media";
     private static final int NOTIFICATION_ID = 42;
 
     private final ScheduledExecutorService io = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
     private final ExecutorService startup = Executors.newSingleThreadExecutor();
-    private static volatile boolean webRtcInitialized = false;
-    private volatile String startupStage = "待機中";
     private final ExecutorService network = Executors.newSingleThreadExecutor();
-    private final List<IceCandidate> pendingLocalIce = Collections.synchronizedList(new ArrayList<>());
-    private final List<IceCandidate> pendingRemoteIce = Collections.synchronizedList(new ArrayList<>());
 
-    private volatile boolean active = false;
+    private static volatile boolean webRtcInitialized = false;
+    private volatile boolean serviceActive = false;
+    private volatile boolean mediaActive = false;
+    private volatile boolean mediaStarting = false;
     private volatile boolean offerQueued = false;
     private volatile boolean remoteDescriptionSet = false;
+    private volatile boolean restartScheduled = false;
+    private volatile String startupStage = "待機中";
     private volatile long lastPollErrorNotice = 0L;
+
+    private final List<IceCandidate> pendingLocalIce = Collections.synchronizedList(new ArrayList<>());
+    private final List<IceCandidate> pendingRemoteIce = Collections.synchronizedList(new ArrayList<>());
 
     private EglBase egl;
     private PeerConnectionFactory factory;
     private PeerConnection peer;
+    private DataChannel controlChannel;
+    private DataChannel.Observer controlObserver;
+    private RtpTransceiver audioTransceiver;
+    private RtpTransceiver videoTransceiver;
+    private RtpSender audioSender;
+    private RtpSender videoSender;
+
     private VideoCapturer cameraCapturer;
     private SurfaceTextureHelper textureHelper;
     private VideoSource videoSource;
     private AudioSource audioSource;
     private AudioTrack audioTrack;
     private VideoTrack videoTrack;
+    private MediaStreamTrack remoteAudioTrack;
     private VideoSink telemetrySink;
-    private RtpSender videoSender;
+
     private volatile long fpsWindowStart = 0L;
     private volatile int framesInWindow = 0;
-    private volatile long lastTelemetryWriteAt = 0L;
     private volatile long lastFrameAt = 0L;
     private volatile int lastFrameWidth = 0;
     private volatile int lastFrameHeight = 0;
@@ -79,11 +119,17 @@ public class WebRtcSessionService extends Service {
     private volatile int cameraRecoveryCount = 0;
     private volatile String networkMode = "auto";
     private volatile String powerMode = "auto";
+
     private PowerManager.WakeLock wakeLock;
     private AudioManager audioManager;
     private int previousAudioMode = AudioManager.MODE_NORMAL;
     private boolean previousSpeakerphone = false;
     private String sessionId = "";
+
+    private ScheduledFuture<?> signalPollFuture;
+    private ScheduledFuture<?> telemetryFuture;
+    private ScheduledFuture<?> watchdogFuture;
+    private ScheduledFuture<?> scheduleFuture;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -91,145 +137,301 @@ public class WebRtcSessionService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
-        if (ACTION_STOP.equals(intent.getAction())) {
-            sendByeAndStop();
+        String action = intent == null ? ACTION_START : intent.getAction();
+        if (ACTION_STOP_WAIT.equals(action)) {
+            stopWaitingAndService();
             return START_NOT_STICKY;
         }
-        if (ACTION_COMMAND.equals(intent.getAction())) {
-            handleRemoteCommand(intent);
-            if (!active) stopSelf(startId);
-            return START_NOT_STICKY;
+        if (ACTION_STOP.equals(action)) {
+            stopMediaOnly();
+            return START_STICKY;
         }
-        if (ACTION_START.equals(intent.getAction()) && !active) {
-            beginSession();
+        if (ACTION_START.equals(action) && !serviceActive) {
+            beginStandby();
         }
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
-    private void sendByeAndStop() {
-        if (network.isShutdown()) {
-            stopSelf();
-            return;
-        }
-        try {
-            network.execute(() -> {
-                try {
-                    SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
-                    JSONObject request = auth(prefs);
-                    request.put("action", "sendSignal");
-                    request.put("fromRole", "android");
-                    request.put("type", "bye");
-                    request.put("sessionId", sessionId);
-                    request.put("payload", "");
-                    MainActivity.post(prefs.getString("gasUrl", ""), request);
-                } catch (Exception ignored) {
-                } finally {
-                    stopSelf();
-                }
-            });
-        } catch (java.util.concurrent.RejectedExecutionException ignored) {
-            stopSelf();
-        }
-    }
-
-    private void beginSession() {
-        try {
-            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
-                throw new SecurityException("カメラの権限がありません。");
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-                throw new SecurityException("マイクの権限がありません。");
-            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
-            if (power == null) throw new Exception("電源管理サービスを取得できません。");
-            Notification notification = buildNotification("カメラ・マイクを準備しています。");
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION_ID, notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
-            } else {
-                startForeground(NOTIFICATION_ID, notification);
-            }
-            active = true;
-            getSharedPreferences("wsc", MODE_PRIVATE).edit().remove("lastMediaError").apply();
-            startupStage = "バックグラウンド初期化";
-            startup.execute(this::startCameraMicrophoneSession);
-        } catch (Exception error) {
-            fail("開始準備に失敗: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
-        } catch (LinkageError error) {
-            fail("Androidネイティブ機能の読み込みに失敗: " + error);
-        }
-    }
-
-    private void startCameraMicrophoneSession() {
+    private void beginStandby() {
         try {
             if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("カメラの権限がありません。アプリを開いて許可してください。");
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("マイクの権限がありません。アプリを開いて許可してください。");
 
-            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
-            if (power == null) throw new Exception("電源管理サービスを取得できません。");
-
-            startupStage = "WakeLock準備";
-            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WebRTCSecurityCamera:MediaSession");
-            wakeLock.setReferenceCounted(false);
-            wakeLock.acquire(6L * 60L * 60L * 1000L);
-
-            SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
-            sessionId = UUID.randomUUID().toString();
-
-            startupStage = "WebRTCネイティブ初期化";
-            synchronized (WebRtcSessionService.class) {
-                if (!webRtcInitialized) {
-                    PeerConnectionFactory.initialize(
-                        PeerConnectionFactory.InitializationOptions.builder(getApplicationContext()).createInitializationOptions()
-                    );
-                    webRtcInitialized = true;
-                }
+            Notification notification = buildNotification("RTC待機を準備しています（カメラ・マイク停止）");
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
             }
-            startupStage = "EGL初期化";
-            egl = EglBase.create();
+
+            serviceActive = true;
+            getSharedPreferences("wsc", MODE_PRIVATE).edit()
+                .putBoolean("standbyActive", true)
+                .remove("lastMediaError")
+                .apply();
+
+            startup.execute(() -> {
+                try {
+                    startupStage = "WebRTC初期化";
+                    initializeWebRtcFactory();
+                    startupStage = "RTC待機接続";
+                    createPeerAndOffer();
+                    scheduleFuture = watchdog.scheduleWithFixedDelay(this::checkScheduleAndSafety, 15, 30, TimeUnit.SECONDS);
+                    notifyStatus("RTC待機を開始しました。カメラ・マイクは使用していません。Webから接続できます。");
+                } catch (Exception error) {
+                    fail("RTC待機を開始できません（" + startupStage + "）: " +
+                        (error.getMessage() == null ? error.toString() : error.getMessage()));
+                } catch (LinkageError error) {
+                    fail("WebRTCネイティブ初期化に失敗しました: " + error);
+                }
+            });
+        } catch (Exception error) {
+            fail("待機開始に失敗しました: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
+        }
+    }
+
+    private void initializeWebRtcFactory() {
+        synchronized (WebRtcSessionService.class) {
+            if (!webRtcInitialized) {
+                PeerConnectionFactory.initialize(
+                    PeerConnectionFactory.InitializationOptions.builder(getApplicationContext())
+                        .createInitializationOptions()
+                );
+                webRtcInitialized = true;
+            }
+        }
+        if (egl == null) egl = EglBase.create();
+        if (factory == null) {
             factory = PeerConnectionFactory.builder()
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext()))
                 .createPeerConnectionFactory();
+        }
+        if (factory == null) throw new IllegalStateException("PeerConnectionFactoryを作成できません。");
+    }
 
-            startupStage = "PeerConnection作成";
-            PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(buildIceServers(prefs));
-            configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-            configuration.iceCandidatePoolSize = 4;
+    private void createPeerAndOffer() throws Exception {
+        closePeerOnly();
+        pendingLocalIce.clear();
+        pendingRemoteIce.clear();
+        offerQueued = false;
+        remoteDescriptionSet = false;
+        sessionId = UUID.randomUUID().toString();
 
-            peer = factory.createPeerConnection(configuration, new PeerConnection.Observer() {
-                @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
-                @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
-                    if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED)
-                        notifyStatus("iPadと通信接続しました。映像・音声を送信中です。");
-                    else if (state == PeerConnection.IceConnectionState.FAILED)
-                        notifyStatus("直接P2P接続に失敗しました。STUNだけでは通らないネットワークの可能性があります。");
-                    else if (state == PeerConnection.IceConnectionState.DISCONNECTED)
-                        notifyStatus("通信が一時切断されました。再接続を試みています。");
+        SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+        PeerConnection.RTCConfiguration configuration =
+            new PeerConnection.RTCConfiguration(buildIceServers(prefs));
+        configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
+        configuration.iceCandidatePoolSize = 4;
+        configuration.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE;
+
+        peer = factory.createPeerConnection(configuration, new PeerConnection.Observer() {
+            @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
+
+            @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
+                if (state == PeerConnection.IceConnectionState.CONNECTED ||
+                    state == PeerConnection.IceConnectionState.COMPLETED) {
+                    notifyStatus("WebとRTC接続しました。待機チャネルを維持しています。");
+                } else if (state == PeerConnection.IceConnectionState.FAILED) {
+                    notifyStatus("RTC接続が失敗しました。再接続を試みます。");
+                    schedulePeerRestart(2500);
+                } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
+                    notifyStatus("RTC通信が一時切断されました。再接続を確認しています。");
+                    schedulePeerRestart(12000);
                 }
-                @Override public void onIceConnectionReceivingChange(boolean receiving) {}
-                @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {}
-                @Override public void onIceCandidate(IceCandidate candidate) {
-                    if (!offerQueued) pendingLocalIce.add(candidate);
-                    else sendIce(candidate);
+            }
+
+            @Override public void onIceConnectionReceivingChange(boolean receiving) {}
+            @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {}
+
+            @Override public void onIceCandidate(IceCandidate candidate) {
+                if (!offerQueued) {
+                    pendingLocalIce.add(candidate);
+                } else {
+                    sendIce(candidate);
                 }
-                @Override public void onIceCandidatesRemoved(IceCandidate[] candidates) {}
-                @Override public void onAddStream(MediaStream stream) {}
-                @Override public void onRemoveStream(MediaStream stream) {}
-                @Override public void onDataChannel(DataChannel channel) {}
-                @Override public void onRenegotiationNeeded() {}
-                @Override public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {
-                    MediaStreamTrack remoteTrack = receiver.track();
-                    if (remoteTrack instanceof AudioTrack) {
-                        ((AudioTrack) remoteTrack).setEnabled(true);
-                        notifyStatus("WebからのPTT音声を受信しました。Androidスピーカーへ出力します。");
+            }
+
+            @Override public void onIceCandidatesRemoved(IceCandidate[] candidates) {}
+            @Override public void onAddStream(MediaStream stream) {}
+            @Override public void onRemoveStream(MediaStream stream) {}
+            @Override public void onDataChannel(DataChannel channel) {
+                if ("wsc-control".equals(channel.label())) observeControlChannel(channel);
+            }
+            @Override public void onRenegotiationNeeded() {}
+
+            @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, MediaStream[] streams) {
+                MediaStreamTrack track = receiver.track();
+                if (track != null && track.kind().equals("audio")) {
+                    remoteAudioTrack = track;
+                    remoteAudioTrack.setEnabled(mediaActive);
+                    notifyStatus("WebからのPTT音声トラックを受信しました。");
+                }
+            }
+        });
+
+        if (peer == null) throw new IllegalStateException("PeerConnectionを作成できません。");
+
+        audioTransceiver = peer.addTransceiver(
+            MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+            new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+        );
+        videoTransceiver = peer.addTransceiver(
+            MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+            new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY)
+        );
+        audioSender = audioTransceiver.getSender();
+        videoSender = videoTransceiver.getSender();
+
+        DataChannel.Init init = new DataChannel.Init();
+        init.ordered = true;
+        init.maxRetransmits = -1;
+        controlChannel = peer.createDataChannel("wsc-control", init);
+        if (controlChannel == null) throw new IllegalStateException("RTCデータチャネルを作成できません。");
+        observeControlChannel(controlChannel);
+
+        MediaConstraints offerConstraints = new MediaConstraints();
+        peer.createOffer(new SdpObserver() {
+            @Override public void onCreateSuccess(SessionDescription offer) {
+                PeerConnection current = peer;
+                if (current == null) return;
+                current.setLocalDescription(new SdpObserver() {
+                    @Override public void onCreateSuccess(SessionDescription description) {}
+                    @Override public void onSetSuccess() {
+                        offerQueued = true;
+                        sendSignal("offer", offer.description);
+                        synchronized (pendingLocalIce) {
+                            for (IceCandidate candidate : pendingLocalIce) sendIce(candidate);
+                            pendingLocalIce.clear();
+                        }
+                        notifyStatus("RTCペアリング情報を発行しました。Web画面から端末を選択してください。");
                     }
-                }
-            });
-            if (peer == null) throw new Exception("WebRTC接続を作成できません。");
+                    @Override public void onCreateFailure(String error) { fail("Offerのローカル設定に失敗: " + error); }
+                    @Override public void onSetFailure(String error) { fail("Offerの登録に失敗: " + error); }
+                }, offer);
+            }
+            @Override public void onSetSuccess() {}
+            @Override public void onCreateFailure(String error) { fail("Offer作成に失敗: " + error); }
+            @Override public void onSetFailure(String error) { fail("Offer設定に失敗: " + error); }
+        }, offerConstraints);
 
-            startupStage = "音声出力ルート準備";
+        signalPollFuture = io.scheduleWithFixedDelay(this::pollSignals, 1, 2, TimeUnit.SECONDS);
+    }
+
+    private void observeControlChannel(DataChannel channel) {
+        if (channel == null) return;
+        try {
+            if (controlObserver != null) channel.unregisterObserver();
+        } catch (Exception ignored) {}
+
+        controlChannel = channel;
+        controlObserver = new DataChannel.Observer() {
+            @Override public void onBufferedAmountChange(long previousAmount) {}
+
+            @Override public void onStateChange() {
+                if (channel.state() == DataChannel.State.OPEN) {
+                    onControlChannelReady();
+                } else if (channel.state() == DataChannel.State.CLOSED) {
+                    notifyStatus("RTC操作チャネルが閉じました。再接続を試みます。");
+                }
+            }
+
+            @Override public void onMessage(DataChannel.Buffer buffer) {
+                if (buffer.binary) return;
+                ByteBuffer data = buffer.data.duplicate();
+                byte[] bytes = new byte[data.remaining()];
+                data.get(bytes);
+                String raw = new String(bytes, StandardCharsets.UTF_8);
+                try {
+                    JSONObject packet = new JSONObject(raw);
+                    String type = packet.optString("type", "");
+                    JSONObject payload = packet.optJSONObject("payload");
+                    if (payload == null) payload = new JSONObject();
+                    handleControlMessage(type, payload);
+                } catch (Exception error) {
+                    notifyStatus("Webからの操作データを読み取れませんでした。");
+                }
+            }
+        };
+        channel.registerObserver(controlObserver);
+        if (channel.state() == DataChannel.State.OPEN) onControlChannelReady();
+    }
+
+    private void onControlChannelReady() {
+        ScheduledFuture<?> poll = signalPollFuture;
+        if (poll != null) {
+            poll.cancel(false);
+            signalPollFuture = null;
+        }
+        notifyStatus("RTC待機接続済み。カメラ・マイクは停止中です。");
+        sendDataMessage("STATUS", collectStatus());
+        if (telemetryFuture == null || telemetryFuture.isCancelled()) {
+            telemetryFuture = io.scheduleWithFixedDelay(this::sendTelemetry, 5, 5, TimeUnit.SECONDS);
+        }
+    }
+
+    private void handleControlMessage(String type, JSONObject payload) {
+        switch (type) {
+            case "START_MEDIA":
+                startMediaOnly();
+                break;
+            case "STOP_MEDIA":
+                stopMediaOnly();
+                break;
+            case "SWITCH_CAMERA":
+                switchCamera();
+                break;
+            case "SET_MODES":
+                applyModes(payload);
+                break;
+            case "GET_STATUS":
+                sendDataMessage("STATUS", collectStatus());
+                break;
+            case "SET_SCHEDULE":
+                saveSchedule(payload);
+                break;
+            default:
+                notifyStatus("未対応のWeb操作です: " + type);
+                break;
+        }
+    }
+
+    private void startMediaOnly() {
+        if (!serviceActive) {
+            sendError("AndroidのRTC待機サービスが停止しています。アプリから待機を開始してください。");
+            return;
+        }
+        if (mediaActive || mediaStarting) return;
+        try {
+            startup.execute(this::startMediaOnlyInternal);
+        } catch (Exception error) {
+            sendError("映像開始処理を実行できません: " + error.getMessage());
+        }
+    }
+
+    private void startMediaOnlyInternal() {
+        if (mediaActive || mediaStarting || !serviceActive) return;
+        mediaStarting = true;
+        startupStage = "カメラ・マイク起動";
+        try {
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("カメラ権限がありません。Androidアプリを開いて許可してください。");
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("マイク権限がありません。Androidアプリを開いて許可してください。");
+            if (peer == null || controlChannel == null || controlChannel.state() != DataChannel.State.OPEN)
+                throw new IllegalStateException("RTC待機接続がありません。Web画面から再接続してください。");
+
+            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+            if (power == null) throw new IllegalStateException("電源管理サービスを取得できません。");
+            if (wakeLock == null) {
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WebRTCSecurityCamera:Media");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire(2L * 60L * 60L * 1000L);
+            }
+
             audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
             if (audioManager != null) {
                 previousAudioMode = audioManager.getMode();
@@ -244,143 +446,457 @@ public class WebRtcSessionService extends Service {
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression", "true"));
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl", "true"));
             audioSource = factory.createAudioSource(audioConstraints);
-            audioTrack = factory.createAudioTrack("wsc_audio", audioSource);
+            audioTrack = factory.createAudioTrack("wsc_audio_" + System.currentTimeMillis(), audioSource);
             audioTrack.setEnabled(true);
-            peer.addTrack(audioTrack, Collections.singletonList("wsc_stream"));
+            if (audioSender == null || !audioSender.setTrack(audioTrack, false))
+                throw new IllegalStateException("AndroidマイクトラックをRTCへ接続できません。");
+            if (remoteAudioTrack != null) remoteAudioTrack.setEnabled(true);
 
-            startupStage = "カメラ選択";
+            startupStage = "カメラ初期化";
             cameraCapturer = createCameraCapturer();
-            if (cameraCapturer == null) throw new Exception("Camera2/Camera1のどちらでもカメラが見つかりません。");
-            textureHelper = SurfaceTextureHelper.create("RDC-Camera", egl.getEglBaseContext());
+            if (cameraCapturer == null) throw new IllegalStateException("使用可能なカメラが見つかりません。");
+            textureHelper = SurfaceTextureHelper.create("WSC-Camera", egl.getEglBaseContext());
             videoSource = factory.createVideoSource(false);
             cameraCapturer.initialize(textureHelper, getApplicationContext(), videoSource.getCapturerObserver());
-            videoTrack = factory.createVideoTrack("wsc_video", videoSource);
+            videoTrack = factory.createVideoTrack("wsc_video_" + System.currentTimeMillis(), videoSource);
             videoTrack.setEnabled(true);
-            telemetrySink = frame -> recordVideoFrame(frame);
+            telemetrySink = this::recordVideoFrame;
             videoTrack.addSink(telemetrySink);
-            videoSender = peer.addTrack(videoTrack, Collections.singletonList("wsc_stream"));
-            startupStage = "カメラ映像取得開始";
-            int[] quality = startCaptureWithFallback(calculateQuality(prefs));
+            if (videoSender == null || !videoSender.setTrack(videoTrack, false))
+                throw new IllegalStateException("AndroidカメラトラックをRTCへ接続できません。");
+
+            startupStage = "映像取得開始";
+            int[] quality = startCaptureWithFallback(calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE)));
             cameraStartAt = System.currentTimeMillis();
+            lastFrameAt = 0L;
+            cameraRecoveryCount = 0;
             applySenderBitrate(quality[3], quality[2]);
-
-            startupStage = "接続情報作成";
-            MediaConstraints offerConstraints = new MediaConstraints();
-            peer.createOffer(new SdpObserver() {
-                @Override public void onCreateSuccess(SessionDescription offer) {
-                    peer.setLocalDescription(new SdpObserver() {
-                        @Override public void onCreateSuccess(SessionDescription description) {}
-                        @Override public void onSetSuccess() {
-                            offerQueued = true;
-                            sendSignal("offer", offer.description);
-                            synchronized (pendingLocalIce) {
-                                for (IceCandidate candidate : pendingLocalIce) sendIce(candidate);
-                                pendingLocalIce.clear();
-                            }
-                            notifyStatus("接続待機中です。iPadで「映像・音声に接続」を押してください。");
-                        }
-                        @Override public void onCreateFailure(String error) { fail("ローカル接続情報の作成に失敗: " + error); }
-                        @Override public void onSetFailure(String error) { fail("ローカル接続情報の設定に失敗: " + error); }
-                    }, offer);
-                }
-                @Override public void onSetSuccess() {}
-                @Override public void onCreateFailure(String error) { fail("接続情報の作成に失敗: " + error); }
-                @Override public void onSetFailure(String error) { fail("接続情報の設定に失敗: " + error); }
-            }, offerConstraints);
-
-            io.scheduleWithFixedDelay(this::pollSignals, 1, 2, TimeUnit.SECONDS);
-            watchdog.scheduleWithFixedDelay(this::monitorVideoFrames, 12, 10, TimeUnit.SECONDS);
-            notifyStatus("カメラ・マイクを開始しました。画面ロック後も継続を試みます。");
+            mediaActive = true;
+            mediaStarting = false;
+            updateNotification("カメラ・マイク使用中（RTC接続済み）");
+            sendDataMessage("MEDIA_STARTED", collectStatus());
+            sendTelemetry();
+        } catch (SecurityException error) {
+            mediaStarting = false;
+            releaseMediaResources();
+            sendError("Android OSがカメラ・マイクの起動を許可しませんでした。通知を開いてアプリを前面に表示してください。");
+            notifyStatus("カメラ・マイク起動がOSに拒否されました。アプリを開いてください。");
         } catch (Exception error) {
-            fail("開始失敗（" + startupStage + "）: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
+            mediaStarting = false;
+            releaseMediaResources();
+            String detail = error.getMessage() == null ? error.toString() : error.getMessage();
+            sendError("映像・音声の開始に失敗（" + startupStage + "）: " + detail);
+            notifyStatus("映像・音声を開始できませんでした: " + detail);
         } catch (LinkageError error) {
-            fail("ネイティブ処理失敗（" + startupStage + "）: " + error);
+            mediaStarting = false;
+            releaseMediaResources();
+            sendError("カメラ・マイクのネイティブ初期化に失敗しました。");
+            notifyStatus("ネイティブ初期化エラー: " + error);
         }
     }
 
-    private void recordVideoFrame(VideoFrame frame) {
-        long now = System.currentTimeMillis();
-        lastFrameAt = now;
-        lastFrameWidth = frame.getBuffer().getWidth();
-        lastFrameHeight = frame.getBuffer().getHeight();
-        if (fpsWindowStart == 0L) fpsWindowStart = now;
-        framesInWindow++;
-        if (now - fpsWindowStart >= 1000L) {
-            observedFps = Math.round(framesInWindow * 1000f / Math.max(1L, now - fpsWindowStart));
-            framesInWindow = 0;
-            fpsWindowStart = now;
-        }
-        if (now - lastTelemetryWriteAt >= 5000L) {
-            lastTelemetryWriteAt = now;
-            getSharedPreferences("wsc", MODE_PRIVATE).edit()
-                .putInt("videoWidth", lastFrameWidth)
-                .putInt("videoHeight", lastFrameHeight)
-                .putInt("videoFps", observedFps)
-                .putLong("lastVideoFrameAt", lastFrameAt)
-                .apply();
-        }
+    private void stopMediaOnly() {
+        try {
+            if (startup.isShutdown()) return;
+            startup.execute(() -> stopMediaOnlyInternal(true));
+        } catch (Exception ignored) {}
     }
 
-    private void monitorVideoFrames() {
-        if (!active || cameraCapturer == null || cameraStartAt == 0L) return;
-        long now = System.currentTimeMillis();
-        long reference = lastFrameAt > 0L ? lastFrameAt : cameraStartAt;
-        if (now - reference < 10000L) return;
-        if (cameraRecoveryCount >= 2) {
-            fail("映像フレームが停止し、再初期化を2回試しても復旧しませんでした。安全のため監視を停止しました。");
+    private void stopMediaOnlyInternal(boolean notifyWeb) {
+        mediaStarting = false;
+        boolean hadMedia = mediaActive || cameraCapturer != null || audioTrack != null || videoTrack != null;
+        mediaActive = false;
+        releaseMediaResources();
+        if (notifyWeb && controlChannel != null && controlChannel.state() == DataChannel.State.OPEN) {
+            sendDataMessage("MEDIA_STOPPED", collectStatus());
+        }
+        updateNotification("RTC待機中（カメラ・マイク停止）");
+        if (hadMedia) notifyStatus("映像・音声を停止し、RTC待機に戻りました。");
+    }
+
+    private void releaseMediaResources() {
+        if (remoteAudioTrack != null) {
+            try { remoteAudioTrack.setEnabled(false); } catch (Exception ignored) {}
+        }
+        if (audioTrack != null) {
+            try { audioTrack.setEnabled(false); } catch (Exception ignored) {}
+            try { if (audioSender != null) audioSender.setTrack(null, false); } catch (Exception ignored) {}
+            try { audioTrack.dispose(); } catch (Exception ignored) {}
+            audioTrack = null;
+        }
+        if (audioSource != null) {
+            try { audioSource.dispose(); } catch (Exception ignored) {}
+            audioSource = null;
+        }
+        if (cameraCapturer != null) {
+            try { cameraCapturer.stopCapture(); } catch (Exception ignored) {}
+            try { cameraCapturer.dispose(); } catch (Exception ignored) {}
+            cameraCapturer = null;
+        }
+        if (videoTrack != null) {
+            try { if (telemetrySink != null) videoTrack.removeSink(telemetrySink); } catch (Exception ignored) {}
+            try { if (videoSender != null) videoSender.setTrack(null, false); } catch (Exception ignored) {}
+            try { videoTrack.dispose(); } catch (Exception ignored) {}
+            videoTrack = null;
+        }
+        telemetrySink = null;
+        if (videoSource != null) {
+            try { videoSource.dispose(); } catch (Exception ignored) {}
+            videoSource = null;
+        }
+        if (textureHelper != null) {
+            try { textureHelper.dispose(); } catch (Exception ignored) {}
+            textureHelper = null;
+        }
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try { wakeLock.release(); } catch (Exception ignored) {}
+        }
+        wakeLock = null;
+        if (audioManager != null) {
+            try { audioManager.setSpeakerphoneOn(previousSpeakerphone); } catch (Exception ignored) {}
+            try { audioManager.setMode(previousAudioMode); } catch (Exception ignored) {}
+            audioManager = null;
+        }
+        cameraStartAt = 0L;
+    }
+
+    private void switchCamera() {
+        if (!mediaActive || !(cameraCapturer instanceof CameraVideoCapturer)) {
+            sendError("カメラ切替は映像配信中のみ利用できます。");
             return;
         }
-        cameraRecoveryCount++;
-        notifyStatus("映像停止を検知。カメラを再初期化しています（" + cameraRecoveryCount + "/2）。");
-        try {
-            cameraCapturer.stopCapture();
-            int[] quality = startCaptureWithFallback(calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE)));
-            cameraStartAt = now;
-            lastFrameAt = 0L;
+        ((CameraVideoCapturer) cameraCapturer).switchCamera(new CameraVideoCapturer.CameraSwitchHandler() {
+            @Override public void onCameraSwitchDone(boolean isFrontCamera) {
+                JSONObject payload = new JSONObject();
+                try {
+                    payload.put("frontCamera", isFrontCamera);
+                    payload.put("message", isFrontCamera ? "フロントカメラに切り替えました。" : "リアカメラに切り替えました。");
+                } catch (Exception ignored) {}
+                sendDataMessage("CAMERA", payload);
+                notifyStatus(isFrontCamera ? "フロントカメラに切り替えました。" : "リアカメラに切り替えました。");
+            }
+            @Override public void onCameraSwitchError(String errorDescription) {
+                sendError("カメラ切替に失敗しました: " + errorDescription);
+            }
+        });
+    }
+
+    private void applyModes(JSONObject payload) {
+        networkMode = payload.optString("networkMode", "auto");
+        powerMode = payload.optString("powerMode", "auto");
+        SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+        prefs.edit().putString("networkMode", networkMode).putString("powerMode", powerMode).apply();
+
+        int[] quality = calculateQuality(prefs);
+        if (mediaActive && cameraCapturer != null) {
+            try {
+                cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]);
+            } catch (Exception error) {
+                try { cameraCapturer.changeCaptureFormat(640, 480, 15); } catch (Exception ignored) {}
+                notifyStatus("指定画質に変更できないため低負荷設定を試しました。");
+            }
             applySenderBitrate(quality[3], quality[2]);
-        } catch (Exception error) {
-            notifyStatus("カメラ再初期化に失敗しました: " + error.getMessage());
+        }
+        notifyStatus("通信・電力モードを適用しました。");
+        sendDataMessage("STATUS", collectStatus());
+    }
+
+    private void saveSchedule(JSONObject payload) {
+        SharedPreferences.Editor editor = getSharedPreferences("wsc", MODE_PRIVATE).edit();
+        editor.putBoolean("scheduleEnabled", payload.optBoolean("enabled", false));
+        editor.putString("scheduleDays", payload.optString("days", "weekdays"));
+        editor.putString("scheduleStart", payload.optString("start", "08:00"));
+        editor.putString("scheduleEnd", payload.optString("end", "20:00"));
+        editor.apply();
+        notifyStatus(payload.optBoolean("enabled", false) ? "監視スケジュールを保存しました。" : "監視スケジュールを無効にしました。");
+        sendDataMessage("NOTICE", messagePayload("監視スケジュールを保存しました。"));
+    }
+
+    private void checkScheduleAndSafety() {
+        if (!serviceActive) return;
+        checkThermalSafety();
+        checkSchedule();
+        sendTelemetry();
+    }
+
+    private void checkThermalSafety() {
+        if (!mediaActive || Build.VERSION.SDK_INT < 29) return;
+        try {
+            PowerManager pm = getSystemService(PowerManager.class);
+            if (pm != null && pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_SEVERE) {
+                sendError("Androidが危険な高温状態です。安全のため映像・音声を停止しました。");
+                stopMediaOnly();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void checkSchedule() {
+        SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+        if (!prefs.getBoolean("scheduleEnabled", false)) return;
+
+        java.util.Calendar now = java.util.Calendar.getInstance();
+        int day = now.get(java.util.Calendar.DAY_OF_WEEK);
+        String days = prefs.getString("scheduleDays", "weekdays");
+        boolean dayAllowed = "everyday".equals(days) ||
+            ("weekdays".equals(days) && day != java.util.Calendar.SATURDAY && day != java.util.Calendar.SUNDAY) ||
+            ("weekend".equals(days) && (day == java.util.Calendar.SATURDAY || day == java.util.Calendar.SUNDAY));
+        if (!dayAllowed) return;
+
+        int current = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE);
+        int start = parseMinutes(prefs.getString("scheduleStart", "08:00"));
+        int end = parseMinutes(prefs.getString("scheduleEnd", "20:00"));
+        if (start < 0 || end < 0 || start == end) return;
+
+        String dayKey = String.format(Locale.US, "%04d%02d%02d",
+            now.get(java.util.Calendar.YEAR),
+            now.get(java.util.Calendar.MONTH) + 1,
+            now.get(java.util.Calendar.DAY_OF_MONTH));
+
+        if (current >= start && current < end) {
+            if (!dayKey.equals(prefs.getString("scheduleStartedDay", ""))) {
+                prefs.edit().putString("scheduleStartedDay", dayKey).apply();
+                notifyStatus("スケジュールの開始時刻です。カメラ・マイクの起動を試みます。");
+                startMediaOnly();
+            }
+            if (end - current == 5 && !dayKey.equals(prefs.getString("scheduleEndNoticeDay", ""))) {
+                prefs.edit().putString("scheduleEndNoticeDay", dayKey).apply();
+                notifyStatus("スケジュール終了まで5分です。");
+            }
+        } else if (current >= end && dayKey.equals(prefs.getString("scheduleStartedDay", "")) &&
+            !dayKey.equals(prefs.getString("scheduleStoppedDay", ""))) {
+            prefs.edit().putString("scheduleStoppedDay", dayKey).apply();
+            notifyStatus("スケジュール終了時刻です。");
+            stopMediaOnly();
         }
     }
 
-    private void handleRemoteCommand(Intent intent) {
-        String command = intent.getStringExtra("command");
-        String raw = intent.getStringExtra("payload");
+    private int parseMinutes(String value) {
         try {
-            JSONObject payload = new JSONObject(raw == null ? "{}" : raw);
-            if ("switch_camera".equals(command)) {
-                if (!(cameraCapturer instanceof CameraVideoCapturer) || !active) {
-                    notifyStatus("カメラ切替は映像セッション接続中のみ使用できます。");
-                    return;
-                }
-                ((CameraVideoCapturer) cameraCapturer).switchCamera(new CameraVideoCapturer.CameraSwitchHandler() {
-                    @Override public void onCameraSwitchDone(boolean isFrontCamera) {
-                        notifyStatus(isFrontCamera ? "フロントカメラに切り替えました。" : "リアカメラに切り替えました。");
-                    }
-                    @Override public void onCameraSwitchError(String errorDescription) {
-                        notifyStatus("カメラ切替に失敗しました: " + errorDescription);
+            String[] parts = value.split(":");
+            int hour = Integer.parseInt(parts[0]);
+            int minute = Integer.parseInt(parts[1]);
+            if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return -1;
+            return hour * 60 + minute;
+        } catch (Exception error) {
+            return -1;
+        }
+    }
+
+    private JSONObject collectStatus() {
+        JSONObject result = new JSONObject();
+        try {
+            Intent battery = registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (battery != null) {
+                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                int temp = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+                int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                if (scale > 0 && level >= 0) result.put("batteryPct", Math.round(level * 100f / scale));
+                if (temp >= 0) result.put("batteryTempC", temp / 10.0);
+                result.put("charging", status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL);
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                PowerManager pm = getSystemService(PowerManager.class);
+                if (pm != null) result.put("thermalStatus", thermalName(pm.getCurrentThermalStatus()));
+            }
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            Network network = cm == null ? null : cm.getActiveNetwork();
+            NetworkCapabilities caps = cm == null || network == null ? null : cm.getNetworkCapabilities(network);
+            if (caps != null) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) result.put("networkType", "Wi-Fi");
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) result.put("networkType", "モバイル通信");
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) result.put("networkType", "Ethernet");
+                else result.put("networkType", "その他");
+            }
+            ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (manager != null) {
+                ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+                manager.getMemoryInfo(info);
+                result.put("memoryUsedMb", Math.max(0, Debug.getPss() / 1024));
+                result.put("memoryTotalMb", info.totalMem / (1024 * 1024));
+            }
+            result.put("cpuLoadPct", JSONObject.NULL);
+            result.put("fps", observedFps);
+            result.put("width", lastFrameWidth);
+            result.put("height", lastFrameHeight);
+            result.put("mediaActive", mediaActive);
+            result.put("standby", serviceActive);
+        } catch (Exception ignored) {}
+        return result;
+    }
+
+    private String thermalName(int status) {
+        if (status == PowerManager.THERMAL_STATUS_NONE) return "NONE";
+        if (status == PowerManager.THERMAL_STATUS_LIGHT) return "LIGHT";
+        if (status == PowerManager.THERMAL_STATUS_MODERATE) return "MODERATE";
+        if (status == PowerManager.THERMAL_STATUS_SEVERE) return "SEVERE";
+        if (status == PowerManager.THERMAL_STATUS_CRITICAL) return "CRITICAL";
+        if (status == PowerManager.THERMAL_STATUS_EMERGENCY) return "EMERGENCY";
+        if (status == PowerManager.THERMAL_STATUS_SHUTDOWN) return "SHUTDOWN";
+        return "取得不可";
+    }
+
+    private JSONObject messagePayload(String message) {
+        JSONObject payload = new JSONObject();
+        try { payload.put("message", message); } catch (Exception ignored) {}
+        return payload;
+    }
+
+    private void sendTelemetry() {
+        if (!serviceActive || controlChannel == null || controlChannel.state() != DataChannel.State.OPEN) return;
+        JSONObject status = collectStatus();
+        sendDataMessage("STATUS", status);
+        try {
+            int battery = status.optInt("batteryPct", 100);
+            if (battery <= 20 && !getSharedPreferences("wsc", MODE_PRIVATE).getBoolean("batteryWarningShown", false)) {
+                getSharedPreferences("wsc", MODE_PRIVATE).edit().putBoolean("batteryWarningShown", true).apply();
+                notifyStatus("バッテリー残量が20%以下です。");
+                sendError("バッテリー残量が20%以下です。");
+            } else if (battery > 20) {
+                getSharedPreferences("wsc", MODE_PRIVATE).edit().putBoolean("batteryWarningShown", false).apply();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void sendError(String message) {
+        sendDataMessage("ERROR", messagePayload(message));
+        notifyStatus(message);
+    }
+
+    private void sendDataMessage(String type, JSONObject payload) {
+        DataChannel channel = controlChannel;
+        if (channel == null || channel.state() != DataChannel.State.OPEN) return;
+        try {
+            JSONObject packet = new JSONObject();
+            packet.put("type", type);
+            packet.put("payload", payload == null ? new JSONObject() : payload);
+            packet.put("at", System.currentTimeMillis());
+            byte[] bytes = packet.toString().getBytes(StandardCharsets.UTF_8);
+            boolean sent = channel.send(new DataChannel.Buffer(ByteBuffer.wrap(bytes), false));
+            if (!sent) notifyStatus("RTC操作メッセージを送信できませんでした。");
+        } catch (Exception error) {
+            notifyStatus("RTCデータ送信に失敗しました。");
+        }
+    }
+
+    private void schedulePeerRestart(long delayMs) {
+        if (restartScheduled || !serviceActive) return;
+        restartScheduled = true;
+        io.schedule(() -> {
+            restartScheduled = false;
+            PeerConnection current = peer;
+            if (!serviceActive || current == null ||
+                (current.iceConnectionState() != PeerConnection.IceConnectionState.DISCONNECTED &&
+                 current.iceConnectionState() != PeerConnection.IceConnectionState.FAILED)) return;
+            try {
+                startup.execute(() -> {
+                    try {
+                        stopMediaOnlyInternal(false);
+                        createPeerAndOffer();
+                        notifyStatus("RTC再接続情報を更新しました。Web画面で再接続してください。");
+                    } catch (Exception error) {
+                        fail("RTC再接続に失敗しました: " + error.getMessage());
                     }
                 });
-            } else if ("set_modes".equals(command)) {
-                networkMode = payload.optString("networkMode", "auto");
-                powerMode = payload.optString("powerMode", "auto");
-                getSharedPreferences("wsc", MODE_PRIVATE).edit()
-                    .putString("networkMode", networkMode).putString("powerMode", powerMode).apply();
-                int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
-                if (cameraCapturer != null && active) {
-                    try { cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]); }
-                    catch (Exception e) {
-                        try { cameraCapturer.changeCaptureFormat(640, 480, 15); }
-                        catch (Exception ignored) {}
-                        notifyStatus("指定画質に変更できないため低負荷設定を試しました。");
-                    }
+            } catch (Exception ignored) {}
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void pollSignals() {
+        if (!serviceActive || !offerQueued || remoteDescriptionSet || sessionId.isEmpty()) return;
+        try {
+            SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+            JSONObject request = auth(prefs);
+            request.put("action", "pollSignals");
+            request.put("role", "android");
+            request.put("sessionId", sessionId);
+            JSONObject response = MainActivity.post(prefs.getString("gasUrl", ""), request);
+            lastPollErrorNotice = 0L;
+            JSONArray signals = response.optJSONArray("signals");
+            if (signals == null) return;
+            for (int i = 0; i < signals.length(); i++) {
+                JSONObject signal = signals.getJSONObject(i);
+                String type = signal.optString("type");
+                String payload = signal.optString("payload");
+                if ("answer".equals(type) && peer != null && !remoteDescriptionSet) {
+                    PeerConnection current = peer;
+                    current.setRemoteDescription(new SdpObserver() {
+                        @Override public void onSetSuccess() {
+                            remoteDescriptionSet = true;
+                            synchronized (pendingRemoteIce) {
+                                for (IceCandidate candidate : pendingRemoteIce) current.addIceCandidate(candidate);
+                                pendingRemoteIce.clear();
+                            }
+                            notifyStatus("Webの応答を受信しました。RTC待機チャネルを確立しています。");
+                        }
+                        @Override public void onSetFailure(String error) {
+                            notifyStatus("Webの応答を設定できません: " + error);
+                        }
+                        @Override public void onCreateSuccess(SessionDescription description) {}
+                        @Override public void onCreateFailure(String error) {}
+                    }, new SessionDescription(SessionDescription.Type.ANSWER, payload));
+                } else if ("ice".equals(type) && peer != null) {
+                    JSONObject candidateJson = new JSONObject(payload);
+                    IceCandidate candidate = new IceCandidate(
+                        candidateJson.optString("sdpMid"),
+                        candidateJson.optInt("sdpMLineIndex"),
+                        candidateJson.optString("candidate")
+                    );
+                    if (remoteDescriptionSet) peer.addIceCandidate(candidate);
+                    else pendingRemoteIce.add(candidate);
+                } else if ("bye".equals(type)) {
+                    schedulePeerRestart(1000);
+                    return;
                 }
-                applySenderBitrate(quality[3], quality[2]);
-                notifyStatus("通信・電力モードを適用しました。");
             }
         } catch (Exception error) {
-            notifyStatus("遠隔設定を適用できません: " + error.getMessage());
+            long now = System.currentTimeMillis();
+            if (now - lastPollErrorNotice > 15000L) {
+                lastPollErrorNotice = now;
+                notifyStatus("初回RTCシグナリングを再試行中です。ネットワークを確認してください。");
+            }
         }
+    }
+
+    private void sendIce(IceCandidate candidate) {
+        JSONObject json = new JSONObject();
+        try {
+            json.put("sdpMid", candidate.sdpMid);
+            json.put("sdpMLineIndex", candidate.sdpMLineIndex);
+            json.put("candidate", candidate.sdp);
+            sendSignal("ice", json.toString());
+        } catch (Exception error) {
+            notifyStatus("ICE候補を作成できませんでした。");
+        }
+    }
+
+    private void sendSignal(String type, String payload) {
+        if (network.isShutdown()) return;
+        final String signalSession = sessionId;
+        try {
+            network.execute(() -> {
+                try {
+                    SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+                    JSONObject request = auth(prefs);
+                    request.put("action", "sendSignal");
+                    request.put("fromRole", "android");
+                    request.put("type", type);
+                    request.put("sessionId", signalSession);
+                    request.put("payload", payload);
+                    MainActivity.post(prefs.getString("gasUrl", ""), request);
+                } catch (Exception error) {
+                    notifyStatus("GASシグナリングに失敗しました。ネットワークを確認してください。");
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {}
+    }
+
+    private JSONObject auth(SharedPreferences prefs) throws Exception {
+        JSONObject request = new JSONObject();
+        request.put("deviceId", prefs.getString("deviceId", ""));
+        request.put("deviceToken", prefs.getString("deviceToken", ""));
+        return request;
     }
 
     private int[] calculateQuality(SharedPreferences prefs) {
@@ -397,14 +913,24 @@ public class WebRtcSessionService extends Service {
         int width = 1280, height = 720, fps = 24, bitrate = 1400000;
         if ("wifi".equals(network)) { width = 1920; height = 1080; fps = 30; bitrate = 2500000; }
         else if ("mobile".equals(network)) { width = 640; height = 360; fps = 15; bitrate = 500000; }
-        if ("eco".equals(power)) { width = Math.min(width, 640); height = Math.min(height, 480); fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000); }
-        else if ("normal".equals(power)) { width = Math.min(width, 1280); height = Math.min(height, 720); fps = Math.min(fps, 24); bitrate = Math.min(bitrate, 1400000); }
-        else if ("performance".equals(power)) { width = Math.min(width, 1920); height = Math.min(height, 1080); fps = Math.min(fps, 30); }
+
+        if ("eco".equals(power)) {
+            width = Math.min(width, 640); height = Math.min(height, 480);
+            fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000);
+        } else if ("normal".equals(power)) {
+            width = Math.min(width, 1280); height = Math.min(height, 720);
+            fps = Math.min(fps, 24); bitrate = Math.min(bitrate, 1400000);
+        } else if ("performance".equals(power)) {
+            width = Math.min(width, 1920); height = Math.min(height, 1080);
+            fps = Math.min(fps, 30);
+        }
+
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 PowerManager pm = getSystemService(PowerManager.class);
                 if (pm != null && pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_MODERATE) {
-                    width = Math.min(width, 960); height = Math.min(height, 540); fps = Math.min(fps, 15); bitrate = Math.min(bitrate, 850000);
+                    width = Math.min(width, 960); height = Math.min(height, 540);
+                    fps = Math.min(fps, 15); bitrate = Math.min(bitrate, 850000);
                 }
             }
             Intent battery = registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
@@ -412,7 +938,8 @@ public class WebRtcSessionService extends Service {
                 int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
                 int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
                 if (scale > 0 && level * 100 / scale <= 20) {
-                    width = Math.min(width, 640); height = Math.min(height, 480); fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000);
+                    width = Math.min(width, 640); height = Math.min(height, 480);
+                    fps = Math.min(fps, 12); bitrate = Math.min(bitrate, 450000);
                 }
             }
         } catch (Exception ignored) {}
@@ -473,8 +1000,9 @@ public class WebRtcSessionService extends Service {
                 String username = item.optString("username", "");
                 String credential = item.optString("credential", "");
                 for (String url : urls) {
-                    String lowerUrl = url.toLowerCase(java.util.Locale.ROOT);
-                    if (!lowerUrl.startsWith("stun:") && !lowerUrl.startsWith("stuns:") && !lowerUrl.startsWith("turn:") && !lowerUrl.startsWith("turns:")) continue;
+                    String lower = url.toLowerCase(Locale.ROOT);
+                    if (!lower.startsWith("stun:") && !lower.startsWith("stuns:") &&
+                        !lower.startsWith("turn:") && !lower.startsWith("turns:")) continue;
                     PeerConnection.IceServer.Builder builder = PeerConnection.IceServer.builder(url);
                     if (!username.isEmpty() && !credential.isEmpty()) {
                         builder.setUsername(username);
@@ -484,7 +1012,7 @@ public class WebRtcSessionService extends Service {
                 }
             }
         } catch (Exception error) {
-            notifyStatus("ICE設定を読み込めません。STUN設定で接続します。");
+            notifyStatus("ICE設定を読み込めません。STUN設定を使用します。");
         }
         if (servers.isEmpty()) {
             servers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
@@ -505,7 +1033,7 @@ public class WebRtcSessionService extends Service {
         try {
             return findCapturer(new Camera1Enumerator(true));
         } catch (RuntimeException error) {
-            notifyStatus("Camera1初期化失敗: " + error.getMessage());
+            notifyStatus("Camera1初期化に失敗しました: " + error.getMessage());
             return null;
         }
     }
@@ -531,102 +1059,90 @@ public class WebRtcSessionService extends Service {
         return null;
     }
 
-    private void sendIce(IceCandidate candidate) {
-        try {
-            JSONObject json = new JSONObject();
-            json.put("sdpMid", candidate.sdpMid);
-            json.put("sdpMLineIndex", candidate.sdpMLineIndex);
-            json.put("candidate", candidate.sdp);
-            sendSignal("ice", json.toString());
-        } catch (Exception error) {
-            notifyStatus("通信候補を送信できませんでした。");
+    private void recordVideoFrame(VideoFrame frame) {
+        long now = System.currentTimeMillis();
+        lastFrameAt = now;
+        lastFrameWidth = frame.getBuffer().getWidth();
+        lastFrameHeight = frame.getBuffer().getHeight();
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
+        framesInWindow++;
+        if (now - fpsWindowStart >= 1000L) {
+            observedFps = Math.round(framesInWindow * 1000f / Math.max(1L, now - fpsWindowStart));
+            framesInWindow = 0;
+            fpsWindowStart = now;
         }
     }
 
-    private void sendSignal(String type, String payload) {
-        if (network.isShutdown()) return;
-        try { network.execute(() -> {
-            try {
-                SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
-                JSONObject json = auth(prefs);
-                json.put("action", "sendSignal");
-                json.put("fromRole", "android");
-                json.put("type", type);
-                json.put("sessionId", sessionId);
-                json.put("payload", payload);
-                MainActivity.post(prefs.getString("gasUrl", ""), json);
-            } catch (Exception error) {
-                notifyStatus("GASへの通信に失敗しました。ネットワークを確認してください。");
-            }
-        }); } catch (java.util.concurrent.RejectedExecutionException ignored) {}
-    }
-
-    private void pollSignals() {
-        if (!active || sessionId.isEmpty()) return;
+    private void monitorVideoFrames() {
+        if (!mediaActive || cameraCapturer == null || cameraStartAt == 0L) return;
+        long now = System.currentTimeMillis();
+        long reference = lastFrameAt > 0L ? lastFrameAt : cameraStartAt;
+        if (now - reference < 10000L) return;
+        if (cameraRecoveryCount >= 2) {
+            sendError("映像フレームが停止し、再初期化を2回試しても復旧しませんでした。安全のため映像・音声を停止しました。");
+            stopMediaOnly();
+            return;
+        }
+        cameraRecoveryCount++;
+        notifyStatus("映像停止を検知。カメラを再初期化しています（" + cameraRecoveryCount + "/2）。");
         try {
-            SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
-            JSONObject request = auth(prefs);
-            request.put("action", "pollSignals");
-            request.put("role", "android");
-            request.put("sessionId", sessionId);
-            JSONObject response = MainActivity.post(prefs.getString("gasUrl", ""), request);
-            lastPollErrorNotice = 0L;
-            org.json.JSONArray signals = response.optJSONArray("signals");
-            if (signals == null) return;
-            for (int i = 0; i < signals.length(); i++) {
-                JSONObject signal = signals.getJSONObject(i);
-                String type = signal.optString("type");
-                String payload = signal.optString("payload");
-                if ("answer".equals(type) && peer != null && !remoteDescriptionSet) {
-                    peer.setRemoteDescription(new SdpObserver() {
-                        @Override public void onSetSuccess() {
-                            remoteDescriptionSet = true;
-                            synchronized (pendingRemoteIce) {
-                                for (IceCandidate candidate : pendingRemoteIce) peer.addIceCandidate(candidate);
-                                pendingRemoteIce.clear();
-                            }
-                            notifyStatus("iPadからの応答を受信しました。映像・音声を接続しています。");
-                        }
-                        @Override public void onSetFailure(String error) { notifyStatus("応答情報を設定できません: " + error); }
-                        @Override public void onCreateSuccess(SessionDescription description) {}
-                        @Override public void onCreateFailure(String error) {}
-                    }, new SessionDescription(SessionDescription.Type.ANSWER, payload));
-                } else if ("ice".equals(type) && peer != null) {
-                    JSONObject candidateJson = new JSONObject(payload);
-                    IceCandidate candidate = new IceCandidate(
-                        candidateJson.optString("sdpMid"),
-                        candidateJson.optInt("sdpMLineIndex"),
-                        candidateJson.optString("candidate")
-                    );
-                    if (remoteDescriptionSet) peer.addIceCandidate(candidate);
-                    else pendingRemoteIce.add(candidate);
-                } else if ("bye".equals(type)) {
-                    stopSelf();
-                    return;
-                }
-            }
+            cameraCapturer.stopCapture();
+            int[] quality = startCaptureWithFallback(calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE)));
+            cameraStartAt = now;
+            lastFrameAt = 0L;
+            applySenderBitrate(quality[3], quality[2]);
         } catch (Exception error) {
-            long now = System.currentTimeMillis();
-            if (now - lastPollErrorNotice > 15000L) {
-                lastPollErrorNotice = now;
-                notifyStatus("接続情報の取得を再試行中です。");
-            }
+            notifyStatus("カメラ再初期化に失敗しました: " + error.getMessage());
         }
     }
 
-    private JSONObject auth(SharedPreferences prefs) throws Exception {
-        JSONObject json = new JSONObject();
-        json.put("deviceId", prefs.getString("deviceId", ""));
-        json.put("deviceToken", prefs.getString("deviceToken", ""));
-        return json;
+    private void stopWaitingAndService() {
+        getSharedPreferences("wsc", MODE_PRIVATE).edit().putBoolean("standbyActive", false).apply();
+        stopMediaOnlyInternal(false);
+        if (!sessionId.isEmpty()) sendSignal("bye", "");
+        serviceActive = false;
+        stopSelf();
+    }
+
+    private void closePeerOnly() {
+        if (signalPollFuture != null) signalPollFuture.cancel(false);
+        signalPollFuture = null;
+        if (telemetryFuture != null) telemetryFuture.cancel(false);
+        telemetryFuture = null;
+
+        if (controlChannel != null) {
+            try { controlChannel.unregisterObserver(); } catch (Exception ignored) {}
+            try { controlChannel.close(); } catch (Exception ignored) {}
+            try { controlChannel.dispose(); } catch (Exception ignored) {}
+        }
+        controlChannel = null;
+        controlObserver = null;
+
+        if (peer != null) {
+            try { peer.close(); } catch (Exception ignored) {}
+            try { peer.dispose(); } catch (Exception ignored) {}
+        }
+        peer = null;
+        audioTransceiver = null;
+        videoTransceiver = null;
+        audioSender = null;
+        videoSender = null;
+        remoteAudioTrack = null;
+        offerQueued = false;
+        remoteDescriptionSet = false;
+        sessionId = "";
     }
 
     private void fail(String message) {
-        active = false;
+        serviceActive = false;
+        mediaActive = false;
         getSharedPreferences("wsc", MODE_PRIVATE).edit()
+            .putBoolean("standbyActive", false)
             .putString("lastMediaError", message)
             .putLong("lastMediaErrorAt", System.currentTimeMillis())
             .apply();
+        releaseMediaResources();
+        sendError(message);
         notifyStatus(message);
         stopSelf();
     }
@@ -634,37 +1150,53 @@ public class WebRtcSessionService extends Service {
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel channel = new NotificationChannel(
-                CHANNEL, "映像・音声セッション", NotificationManager.IMPORTANCE_LOW
+                CHANNEL, "RTC待機・映像音声", NotificationManager.IMPORTANCE_LOW
             );
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) manager.createNotificationChannel(channel);
         }
     }
 
     private Notification buildNotification(String text) {
         Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setAction(MainActivity.ACTION_REQUEST_MEDIA);
         openIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent openPending = PendingIntent.getActivity(
             this, 43, openIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        Intent stopIntent = new Intent(this, WebRtcSessionService.class);
-        stopIntent.setAction(ACTION_STOP);
-        PendingIntent stopPendingIntent = PendingIntent.getService(
-            this, 42, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+
+        Intent mediaStop = new Intent(this, WebRtcSessionService.class);
+        mediaStop.setAction(ACTION_STOP);
+        PendingIntent mediaStopPending = PendingIntent.getService(
+            this, 42, mediaStop, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
+
+        Intent waitStop = new Intent(this, WebRtcSessionService.class);
+        waitStop.setAction(ACTION_STOP_WAIT);
+        PendingIntent waitStopPending = PendingIntent.getService(
+            this, 44, waitStop, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
             ? new Notification.Builder(this, CHANNEL)
             : new Notification.Builder(this);
-        return builder.setSmallIcon(android.R.drawable.presence_video_online)
+
+        builder.setSmallIcon(android.R.drawable.presence_video_online)
             .setContentTitle("WebRTC Security Camera")
             .setContentText(text)
             .setContentIntent(openPending)
-            .addAction(new Notification.Action.Builder(
+            .setOngoing(true);
+
+        if (mediaActive) {
+            builder.addAction(new Notification.Action.Builder(
                 Icon.createWithResource(this, android.R.drawable.ic_media_pause),
-                "セッション停止", stopPendingIntent
-            ).build())
-            .setOngoing(true)
-            .build();
+                "映像・音声を切断", mediaStopPending
+            ).build());
+        }
+        builder.addAction(new Notification.Action.Builder(
+            Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+            "待機を終了", waitStopPending
+        ).build());
+        return builder.build();
     }
 
     private void notifyStatus(String text) {
@@ -674,36 +1206,36 @@ public class WebRtcSessionService extends Service {
         }
     }
 
+    private void updateNotification(String text) {
+        notifyStatus(text);
+    }
+
     @Override public void onDestroy() {
-        active = false;
+        serviceActive = false;
+        mediaActive = false;
+        if (signalPollFuture != null) signalPollFuture.cancel(true);
+        if (telemetryFuture != null) telemetryFuture.cancel(true);
+        if (watchdogFuture != null) watchdogFuture.cancel(true);
+        if (scheduleFuture != null) scheduleFuture.cancel(true);
+        releaseMediaResources();
+        closePeerOnly();
         startup.shutdownNow();
         io.shutdownNow();
-        network.shutdownNow();
-        if (cameraCapturer != null) {
-            try { cameraCapturer.stopCapture(); } catch (Exception ignored) {}
-            try { cameraCapturer.dispose(); } catch (Exception ignored) {}
-        }
-        if (peer != null) try { peer.dispose(); } catch (Exception ignored) {}
-        if (audioTrack != null) try { audioTrack.dispose(); } catch (Exception ignored) {}
         watchdog.shutdownNow();
-        if (videoTrack != null) {
-            if (telemetrySink != null) try { videoTrack.removeSink(telemetrySink); } catch (Exception ignored) {}
-            try { videoTrack.dispose(); } catch (Exception ignored) {}
+        network.shutdownNow();
+        if (factory != null) {
+            try { factory.dispose(); } catch (Exception ignored) {}
+            factory = null;
         }
-        videoSender = null;
-        if (videoSource != null) try { videoSource.dispose(); } catch (Exception ignored) {}
-        if (audioSource != null) try { audioSource.dispose(); } catch (Exception ignored) {}
-        if (textureHelper != null) try { textureHelper.dispose(); } catch (Exception ignored) {}
-        if (factory != null) try { factory.dispose(); } catch (Exception ignored) {}
-        if (egl != null) try { egl.release(); } catch (Exception ignored) {}
-        if (wakeLock != null && wakeLock.isHeld()) try { wakeLock.release(); } catch (Exception ignored) {}
-        if (audioManager != null) {
-            try { audioManager.setSpeakerphoneOn(previousSpeakerphone); } catch (Exception ignored) {}
-            try { audioManager.setMode(previousAudioMode); } catch (Exception ignored) {}
+        if (egl != null) {
+            try { egl.release(); } catch (Exception ignored) {}
+            egl = null;
         }
         stopForeground(true);
         super.onDestroy();
     }
 
-    @Override public IBinder onBind(Intent intent) { return null; }
+    @Override public IBinder onBind(Intent intent) {
+        return null;
+    }
 }
