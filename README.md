@@ -1,17 +1,27 @@
 # WebRTC Security Camera
 
-Android端末を、利用者の許可のもとリアルタイム監視カメラとして使用し、iPad / PCのブラウザから映像・音声を確認・操作する個人利用プロジェクトです。
+Android端末を利用者の許可のもとリアルタイムカメラとして使用し、iPad / PCブラウザから映像・音声を確認・操作する個人利用プロジェクトです。
 
 - Android APK：Java + WebRTC + Foreground Service
 - Web：HTML / CSS / JavaScript + GitHub Pages
-- Signaling / 登録：Google Apps Script + Google Sheets
-- Media：WebRTC（DTLS-SRTP / P2P）
-- Push：Firebase / FCMは使用しない。GASへ通常5秒間隔で指令確認
-- 録画・録音：なし
+- Pairing / Signaling：Google Apps Script + Google Sheets
+- Media and controls：WebRTC P2P / DataChannel
+- Firebase / FCM：使用しない
+- Recording：なし（映像・音声ファイルを作成しない）
 
-## 今回のUI / 機能更新
+## 接続方式
 
-白基調の大画面ビューア、登録端末一覧、接続・自動起動要求、カメラ切替、ミュート、PTT、通信・電力モード、スケジュール、端末状態表示、バッテリー警告・高温停止・フレーム停止復旧を実装対象にしています。
+初回ペアリングとSDP/ICE交換、RTC切断後の再接続にだけGASを使用します。AndroidのRTC DataChannelがWebと接続した後は、Webからの開始・停止、カメラ切替、PTT制御、通信/電力モード、状態通知をDataChannelで直接送ります。安定したRTC待機中の通常操作にGASポーリングは使いません。
+
+WebRTC自体には初回の相手発見やSDP/ICE交換機能が含まれないため、RTC未接続状態から遠隔接続するための初期シグナリングは必要です。Webページを閉じた場合、次回は再度シグナリングします。
+
+## Android画面
+
+- 端末ペアリング（6桁コード）
+- バックグラウンド待機開始
+- 映像・音声切断（RTC待機は維持）
+
+待機中はカメラ・マイクを使用しません。接続要求を受信した後にメディア開始を試みます。Android OSが拒否した場合は通知からアプリを開く必要があります。
 
 ## 公開先
 
@@ -19,10 +29,14 @@ Android端末を、利用者の許可のもとリアルタイム監視カメラ�
 - [GitHub Actions](https://github.com/a09848281-prog/web-rtc-/actions)
 - [Repository](https://github.com/a09848281-prog/web-rtc-)
 
-## 重要
+## セットアップ
 
-Webからの自動接続要求は維持しています。ただしAndroid 13ではバックグラウンドからカメラ・マイクを新規起動できない場合があります。OSが拒否した場合はAndroidの常時通知からアプリを開く必要があります。OS制限を回避する無人起動は行いません。
+[docs/SETUP.md](docs/SETUP.md) を参照してください。GASコードはApps Scriptへ貼り付けて保存し、「デプロイを管理」→編集→新バージョン→デプロイが必要です。GitHubのCode.gsを更新しただけでは既存GAS URLには反映されません。
 
-今回のGASコードはApps Scriptへ貼り付け、「デプロイを管理」→編集→新バージョン→デプロイが必要です。GitHubのCode.gsを更新しただけでは既存GAS URLに反映されません。
+## 注意
 
-管理者認証は未実装です。GitHub Pagesを閲覧できる人が端末一覧・登録コード・指令APIを操作できるため、信頼できる個人利用に限定してください。実機検証が終わるまで完成版として扱わないでください。
+- Firebase / FCMは使用しません。
+- TURNサーバーは同梱していません。ネットワークによってはTURNが必要です。
+- 管理者ログインはまだありません。個人の信頼できる範囲で使用してください。
+- Android OSのバックグラウンド制限を回避する処理は行いません。
+- GitHub Actionsビルド成功と、Android 13実機・iPad Safari・PCブラウザでの機能検証は別です。実機検証が終わるまで完成済みとは扱いません。
