@@ -1,0 +1,43 @@
+name: Build WebRTC Security Camera APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: '8.7'
+      - name: Check required permissions
+        run: |
+          grep -q 'ACCESS_NETWORK_STATE' android/app/src/main/AndroidManifest.xml
+          grep -q 'FOREGROUND_SERVICE_CAMERA' android/app/src/main/AndroidManifest.xml
+          grep -q 'FOREGROUND_SERVICE_MICROPHONE' android/app/src/main/AndroidManifest.xml
+      - name: Build debug APK
+        working-directory: android
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-security-camera-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
