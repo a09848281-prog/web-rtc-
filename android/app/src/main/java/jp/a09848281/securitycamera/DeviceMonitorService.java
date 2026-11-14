@@ -247,12 +247,24 @@ public class DeviceMonitorService extends Service {
             }
             Calendar now = Calendar.getInstance();
             int day = now.get(Calendar.DAY_OF_WEEK);
-            String days = schedule.optString("days", "everyday");
-            if ("weekdays".equals(days) && (day == Calendar.SATURDAY || day == Calendar.SUNDAY)) return;
-            if ("weekend".equals(days) && day != Calendar.SATURDAY && day != Calendar.SUNDAY) return;
             String start = schedule.optString("start", "00:00"), end = schedule.optString("end", "00:00");
             int current = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
             int from = parseMinutes(start), to = parseMinutes(end);
+            boolean overnight = from > to;
+            int scheduleDay = overnight && current < to ? (day == Calendar.SUNDAY ? Calendar.SATURDAY : day - 2) : day;
+            String days = schedule.optString("days", "everyday");
+            boolean dayAllowed = !"weekdays".equals(days) || (scheduleDay != Calendar.SATURDAY && scheduleDay != Calendar.SUNDAY);
+            if ("weekend".equals(days)) dayAllowed = scheduleDay == Calendar.SATURDAY || scheduleDay == Calendar.SUNDAY;
+            if (!dayAllowed) {
+                if (prefs.getBoolean("scheduleActive", false)) {
+                    prefs.edit().putBoolean("scheduleActive", false).apply();
+                    Intent stop = new Intent(this, WebRtcSessionService.class);
+                    stop.setAction(WebRtcSessionService.ACTION_STOP);
+                    startService(stop);
+                    update("曜日設定が終了したため監視を停止しました。", false);
+                }
+                return;
+            }
             boolean active = from < to ? current >= from && current < to : current >= from || current < to;
             int minutesToEnd = from < to ? to - current : (current >= from ? 1440 - current + to : to - current);
             if (active && minutesToEnd > 0 && minutesToEnd <= 5) {
