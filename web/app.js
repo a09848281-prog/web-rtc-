@@ -1,17 +1,15 @@
 (()=>{"use strict";
 const $=id=>document.getElementById(id);
-const urlInput=$("gasUrl"),keyInput=$("adminKey"),apiState=$("apiState"),devices=$("devices"),message=$("message"),video=$("remoteVideo");
+const urlInput=$("gasUrl"),apiState=$("apiState"),devices=$("devices"),message=$("message"),video=$("remoteVideo");
 const state={selected:null,pc:null,sessionId:null,pollTimer:null,statsTimer:null,connecting:false,remoteStream:null,seenTracks:new Set(),lastVideoBytes:0,lastAudioBytes:0,lastFrames:0,lastStatsAt:0};
 const savedUrl=localStorage.getItem("wsc_gas_url")||window.RDC_CONFIG?.GAS_URL||"";
-const savedKey=localStorage.getItem("wsc_admin_key")||"";
-urlInput.value=savedUrl;keyInput.value=savedKey;
+urlInput.value=savedUrl;
 video.autoplay=true;video.playsInline=true;video.muted=false;
 
 function config(){
- const url=urlInput.value.trim(),adminKey=keyInput.value.trim();
+ const url=urlInput.value.trim();
  if(!/^https:\/\/script\.google\.com\/macros\/s\/[^\s]+\/exec$/.test(url))throw Error("GAS WebアプリURLを正しく入力してください。");
- if(adminKey.length<24)throw Error("管理者キーは24文字以上にしてください。");
- return{url,adminKey};
+ return{url};
 }
 async function api(action,data={}){
  const c=config(),randomBytes=new Uint8Array(16);crypto.getRandomValues(randomBytes);
@@ -21,7 +19,7 @@ async function api(action,data={}){
   const frame=document.createElement("iframe"),form=document.createElement("form");
   frame.name=frameName;frame.title="GAS通信";frame.style.display="none";
   form.method="POST";form.action=c.url;form.target=frameName;form.style.display="none";
-  const fields={rdcPayload:JSON.stringify({action,adminKey:c.adminKey,...data}),rdcRequestId:requestId};
+  const fields={rdcPayload:JSON.stringify({action,...data}),rdcRequestId:requestId};
   for(const [name,value] of Object.entries(fields)){const input=document.createElement("input");input.type="hidden";input.name=name;input.value=value;form.append(input);}
   let finished=false;
   const cleanup=()=>{window.removeEventListener("message",onMessage);clearTimeout(timer);form.remove();frame.remove();};
@@ -190,7 +188,7 @@ async function startView(){
  }
 }
 $("saveUrl").addEventListener("click",async()=>{
- try{const c=config();localStorage.setItem("wsc_gas_url",c.url);localStorage.setItem("wsc_admin_key",c.adminKey);await api("ping");apiState.textContent="GAS接続済み";msg("GASへの接続を確認しました。");await refresh();}
+ try{const c=config();localStorage.setItem("wsc_gas_url",c.url);await api("ping");apiState.textContent="GAS接続済み";msg("GASへの接続を確認しました。");await refresh();}
  catch(error){apiState.textContent="エラー";msg(error.message,true);}
 });
 $("refresh").addEventListener("click",refresh);
@@ -209,5 +207,5 @@ document.querySelectorAll("[data-command]").forEach(button=>button.addEventListe
   setCommandStatus(button.dataset.command==="start_session"?"Androidに開始通知を送りました。通知をタップして開始してください。":button.dataset.command==="stop_session"?"Androidに停止要求を送りました。":"状態確認を要求しました。");
  }catch(error){setCommandStatus(error.message);}
 }));
-if(savedUrl&&savedKey)refresh();
+if(savedUrl)refresh();
 })();
