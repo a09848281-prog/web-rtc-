@@ -228,11 +228,13 @@
   async function refreshDevices() {
     try {
       const result = await api("listDevices", { deviceTokens: tokenMap() });
-      renderDevices(result.devices || []);
+      window.__wscDevices = result.devices || [];
+      renderDevices(window.__wscDevices);
       apiState.textContent = "GASペアリング接続済み";
-      setConnection("RTC待機中", "online");
+      setConnection("RTC接続待機", "online");
       $("message").textContent = "";
     } catch (error) {
+      window.__wscDevices = [];
       apiState.textContent = "シグナリング接続エラー";
       setConnection("サーバー接続エラー", "error");
       messageElement.textContent = error.message;
@@ -349,13 +351,17 @@
       if (payload.mediaActive === true) {
         state.mediaActive = true;
         setBadge("ライブ");
+        $("switchCamera").disabled = false;
       } else if (payload.mediaActive === false) {
         state.mediaActive = false;
         setBadge("RTC待機中");
+        $("switchCamera").disabled = true;
       }
+      $("pttButton").disabled = !state.mediaActive || !state.audioTransceiver;
       if (payload.message) setStatus(String(payload.message));
     } else if (type === "MEDIA_STARTED") {
       state.mediaActive = true;
+      $("pttButton").disabled = !state.audioTransceiver;
       setBadge("ライブ");
       $("videoPlaceholder").hidden = false;
       $("staleBadge").hidden = true;
@@ -363,6 +369,7 @@
       setStatus("Androidのカメラ・マイクを起動しました。映像の到着を待っています。");
     } else if (type === "MEDIA_STOPPED") {
       state.mediaActive = false;
+      $("pttButton").disabled = true;
       setBadge("RTC待機中");
       $("videoPlaceholder").hidden = false;
       $("staleBadge").hidden = true;
@@ -553,6 +560,7 @@
         state.localMicTrack.enabled = false;
       }
       state.statsTimer = setInterval(() => updateStats(pc), 2000);
+      $("pttButton").disabled = !state.audioTransceiver || !state.mediaActive;
       startDarkCheck();
       sendControl("START_MEDIA");
       state.mediaActive = true;
@@ -580,6 +588,7 @@
       stream.getTracks().forEach(track => track.stop());
       setMicState("許可済み（PTT時のみ取得）", true);
       $("requestMic").textContent = "許可済み";
+      $("pttButton").disabled = !state.mediaActive || !state.audioTransceiver;
       $("pttStatus").textContent = "PTTボタンを押している間だけマイクを起動します。";
     } catch (error) {
       setMicState("許可されていません");
@@ -851,17 +860,5 @@
   });
 
   window.__wscDevices = [];
-  const renderDevicesOriginal = renderDevices;
-  // Keep the current list available to close/deselect handlers without exposing credentials.
-  const originalRefresh = refreshDevices;
-  refreshDevices = async function () {
-    await originalRefresh();
-    try {
-      const result = await api("listDevices", { deviceTokens: tokenMap() });
-      window.__wscDevices = result.devices || [];
-      renderDevicesOriginal(window.__wscDevices);
-    } catch (_) {}
-  };
-
   refreshDevices();
 })();
