@@ -8,14 +8,12 @@ import android.content.SharedPreferences;
 public class StopReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         SharedPreferences prefs = context.getSharedPreferences("wsc", Context.MODE_PRIVATE);
-        prefs.edit().putBoolean("monitoring", false).apply();
+        prefs.edit().putBoolean("standbyActive", false).apply();
 
         try {
-            Intent mediaStop = new Intent(context, WebRtcSessionService.class);
-            mediaStop.setAction(WebRtcSessionService.ACTION_STOP);
-            context.startService(mediaStop);
+            Intent stop = new Intent(context, WebRtcSessionService.class);
+            stop.setAction(WebRtcSessionService.ACTION_STOP_WAIT);
+            context.startService(stop);
         } catch (Exception ignored) {}
-
-        context.stopService(new Intent(context, DeviceMonitorService.class));
     }
 }
