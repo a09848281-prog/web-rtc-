@@ -673,7 +673,8 @@ public class WebRtcSessionService extends Service {
     private void saveSchedule(JSONObject payload) {
         SharedPreferences.Editor editor = getSharedPreferences("wsc", MODE_PRIVATE).edit();
         editor.putBoolean("scheduleEnabled", payload.optBoolean("enabled", false));
-        editor.putString("scheduleDays", payload.optString("days", "weekdays"));
+        JSONArray selectedDays = payload.optJSONArray("days");
+        editor.putString("scheduleDays", selectedDays == null ? "[\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]" : selectedDays.toString());
         editor.putString("scheduleStart", payload.optString("start", "08:00"));
         editor.putString("scheduleEnd", payload.optString("end", "20:00"));
         editor.apply();
@@ -706,10 +707,32 @@ public class WebRtcSessionService extends Service {
 
         java.util.Calendar now = java.util.Calendar.getInstance();
         int day = now.get(java.util.Calendar.DAY_OF_WEEK);
-        String days = prefs.getString("scheduleDays", "weekdays");
-        boolean dayAllowed = "everyday".equals(days) ||
-            ("weekdays".equals(days) && day != java.util.Calendar.SATURDAY && day != java.util.Calendar.SUNDAY) ||
-            ("weekend".equals(days) && (day == java.util.Calendar.SATURDAY || day == java.util.Calendar.SUNDAY));
+        String dayCode;
+        switch (day) {
+            case java.util.Calendar.MONDAY: dayCode = "MON"; break;
+            case java.util.Calendar.TUESDAY: dayCode = "TUE"; break;
+            case java.util.Calendar.WEDNESDAY: dayCode = "WED"; break;
+            case java.util.Calendar.THURSDAY: dayCode = "THU"; break;
+            case java.util.Calendar.FRIDAY: dayCode = "FRI"; break;
+            case java.util.Calendar.SATURDAY: dayCode = "SAT"; break;
+            default: dayCode = "SUN"; break;
+        }
+        String days = prefs.getString("scheduleDays", "[\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]");
+        boolean dayAllowed = false;
+        try {
+            JSONArray selectedDays = new JSONArray(days);
+            for (int i = 0; i < selectedDays.length(); i++) {
+                if (dayCode.equals(selectedDays.optString(i))) {
+                    dayAllowed = true;
+                    break;
+                }
+            }
+        } catch (Exception error) {
+            // Migrate legacy weekday/weekend schedule values.
+            dayAllowed = ("weekdays".equals(days) && day != java.util.Calendar.SATURDAY && day != java.util.Calendar.SUNDAY) ||
+                ("weekend".equals(days) && (day == java.util.Calendar.SATURDAY || day == java.util.Calendar.SUNDAY)) ||
+                "everyday".equals(days);
+        }
         if (!dayAllowed) return;
 
         int current = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE);
