@@ -48,7 +48,7 @@ function displayTelemetry(s={}){
  else warning.hidden=true;
 }
 function selectDevice(d){
- if(state.selected?.deviceId!==d.deviceId)endView(false,false);
+ if(state.selected?.deviceId!==d.deviceId)endView(true,true);
  state.selected=d;$("controlPanel").hidden=false;$("selectedName").textContent=d.name||"端末操作";$("viewerTitle").textContent=d.name||"ライブ映像";$("viewerSub").textContent="登録済みAndroid。接続ボタンから接続要求を送信できます。";
  displayTelemetry(d.status||{});render(deviceCache);status("接続ボタンを押すとAndroidに接続要求を送信し、応答後にWebRTCを開始します。");
 }
@@ -107,13 +107,16 @@ function startDarkCheck(){
  const canvas=document.createElement("canvas"),ctx=canvas.getContext("2d",{willReadFrequently:true});canvas.width=48;canvas.height=27;let consecutive=0;
  state.darkTimer=setInterval(()=>{if(video.readyState<2||!video.videoWidth)return;try{ctx.drawImage(video,0,0,48,27);const data=ctx.getImageData(0,0,48,27).data;let sum=0;for(let i=0;i<data.length;i+=4)sum+=(data[i]+data[i+1]+data[i+2])/3;const avg=sum/(data.length/4);consecutive=avg<14?consecutive+1:0;if(consecutive>=8){$("healthWarning").textContent="暗い映像が続いています。照明とカメラの向きを確認してください。";$("healthWarning").hidden=false;}}catch(_){}},5000);
 }
-async function connect(){
+async function connect(forceRestart=false){
  if(!state.selected){status("先にAndroid端末を選択してください。");return;}
  if(state.connecting)return;
- endView(false,false);state.connecting=true;badge("接続要求中");connection("Androidへ接続要求中");
- status("Androidへ自動接続要求を送信しています。OSがカメラ・マイクの起動を許可すると映像が開始します。");
+ const restart=forceRestart||!!state.sessionId||!!state.pc;
+ const oldSession=state.sessionId;
+ if(oldSession)signal("bye","",oldSession).catch(()=>{});
+ stopTimers();releasePeer();state.connecting=true;badge("接続要求中");connection("Androidへ接続要求中");
+ status(restart?"再接続要求を送信しています。":"Androidへ自動接続要求を送信しています。OSがカメラ・マイクの起動を許可すると映像が開始します。");
  try{
-  await command("start_session");
+  await command(restart?"restart_session":"start_session");
   const iceServers=[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}];
   const pc=new RTCPeerConnection({iceServers,bundlePolicy:"max-bundle",rtcpMuxPolicy:"require",iceCandidatePoolSize:4});
   state.pc=pc;state.remoteStream=new MediaStream();
@@ -129,9 +132,9 @@ async function connect(){
   pc.onicecandidate=e=>{if(!e.candidate||!state.sessionId)return;const payload=JSON.stringify(e.candidate.toJSON());if(!answerSent)queued.push(payload);else signal("ice",payload).catch(err=>status("ICE送信失敗: "+err.message));};
   pc.onconnectionstatechange=()=>{
    if(pc!==state.pc)return;
-   if(pc.connectionState==="connected"){badge("ライブ");connection("WebRTC接続済み","online");status("ライブ映像・音声に接続しました。");$("viewerSub").textContent="ライブストリームを受信しています。";state.lastFrameAt=Date.now();}
+   if(pc.connectionState==="connected"){badge("ライブ");connection("WebRTC接続済み","online");status("ライブ映像・音声に接続しました。");$("viewerSub").textContent="ライブストリームを受信しています。";state.lastFrameAt=Date.now();state.reconnectTried=false;}
    else if(pc.connectionState==="failed"||pc.connectionState==="disconnected"){badge("切断");connection("通信切断","error");status("通信が切断されました。Android待機状態とネットワークを確認してください。");$("staleBadge").hidden=false;
-    if(pc.connectionState==="failed"&&!state.reconnectTried){state.reconnectTried=true;setTimeout(()=>{if(state.selected&&state.pc===pc){endView(false);connect();}},2500);}
+    if(pc.connectionState==="failed"&&!state.reconnectTried){state.reconnectTried=true;setTimeout(()=>{if(state.selected&&state.pc===pc){connect(true);}},2500);}
    }else if(pc.connectionState==="connecting"){badge("接続中");connection("WebRTC接続中");}
   };
   const deadline=Date.now()+100000;
@@ -158,7 +161,7 @@ async function connect(){
 $("saveUrl").addEventListener("click",async()=>{try{const c=config();localStorage.setItem("wsc_gas_url",c.url);await api("ping");apiState.textContent="サーバー接続済み";$("message").textContent="GAS接続を確認しました。";await refresh();}catch(e){$("message").textContent=e.message;apiState.textContent="接続エラー";}});
 $("refresh").addEventListener("click",refresh);
 $("createPair").addEventListener("click",async()=>{try{const r=await api("createPairCode");$("pairCodeText").textContent=r.pairCode;$("pairResult").hidden=false;$("message").textContent="登録コードを発行しました。10分以内にAndroidへ入力してください。";}catch(e){$("message").textContent=e.message;}});
-$("closeControl").addEventListener("click",()=>{endView();$("controlPanel").hidden=true;});
+$("closeControl").addEventListener("click",()=>{endView(true,true);$("controlPanel").hidden=true;});
 $("viewBtn").addEventListener("click",connect);
 $("endViewBtn").addEventListener("click",()=>{endView(true,true);status("Androidへ停止要求を送信しました。待機サービスは継続します。");});
 $("switchCamera").addEventListener("click",async()=>{try{await command("switch_camera");status("カメラ切替要求をAndroidへ送信しました。");}catch(e){status(e.message);}});
