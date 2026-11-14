@@ -209,3 +209,4 @@ document.querySelectorAll("[data-command]").forEach(button=>button.addEventListe
 }));
 if(savedUrl)refresh();
 })();
+// Pages redeployment trigger: 2026-11-14
