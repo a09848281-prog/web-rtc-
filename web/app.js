@@ -50,25 +50,38 @@
   function readBrowserDevices() {
     try {
       const value = JSON.parse(localStorage.getItem(TOKEN_KEY) || "[]");
-      return Array.isArray(value) ? value.filter(x =>
-        x && typeof x.deviceId === "string" && typeof x.webToken === "string"
-      ) : [];
+      if (!Array.isArray(value)) return [];
+      return value.filter(x => x && x.deviceId != null && x.webToken != null)
+        .map(x => ({
+          ...x,
+          deviceId: String(x.deviceId).trim(),
+          webToken: String(x.webToken).trim()
+        }))
+        .filter(x => x.deviceId && x.webToken);
     } catch (_) {
       return [];
     }
   }
 
   function saveBrowserDevices(list) {
-    localStorage.setItem(TOKEN_KEY, JSON.stringify(list));
+    const normalized = list.filter(x => x && x.deviceId != null && x.webToken != null)
+      .map(x => ({ ...x, deviceId: String(x.deviceId).trim(), webToken: String(x.webToken).trim() }))
+      .filter(x => x.deviceId && x.webToken);
+    localStorage.setItem(TOKEN_KEY, JSON.stringify(normalized));
+    const check = JSON.parse(localStorage.getItem(TOKEN_KEY) || "[]");
+    if (!Array.isArray(check) || check.length !== normalized.length) {
+      throw new Error("ブラウザにアクセスキーを保存できません。Safariのプライベートブラウズ設定やサイトデータ設定を確認してください。");
+    }
   }
 
   function findBrowserDevice(deviceId) {
-    return readBrowserDevices().find(x => x.deviceId === deviceId) || null;
+    const target = String(deviceId == null ? "" : deviceId).trim();
+    return readBrowserDevices().find(x => x.deviceId === target) || null;
   }
 
   function tokenMap() {
     const map = {};
-    for (const item of readBrowserDevices()) map[item.deviceId] = item.webToken;
+    for (const item of readBrowserDevices()) map[String(item.deviceId).trim()] = item.webToken;
     return map;
   }
 
@@ -265,7 +278,7 @@
 
   function authSignal(type, payload, sessionId = state.sessionId) {
     const credential = findBrowserDevice(state.selected?.deviceId);
-    if (!credential) throw new Error("このブラウザの端末アクセスキーがありません。Androidを再登録してください。");
+    if (!credential) throw new Error("このSafariに端末アクセスキーがありません。登録コード発行から再ペアリングしてください。");
     return api("sendSignal", {
       fromRole: "web",
       deviceId: credential.deviceId,
@@ -278,7 +291,7 @@
 
   async function pollInitialSignals() {
     const credential = findBrowserDevice(state.selected?.deviceId);
-    if (!credential) throw new Error("アクセスキーが見つかりません。Androidを再登録してください。");
+    if (!credential) throw new Error("Webブラウザ側のアクセスキーが見つかりません。Androidの登録だけでは復旧できません。Safariで同じWebページを開き、「登録コード発行」から新しいコードでペアリングしてください。プライベートブラウズではなく通常タブを使用してください。");
     return api("pollSignals", {
       role: "web",
       deviceId: credential.deviceId,
@@ -780,8 +793,11 @@
     $("createPair").disabled = true;
     try {
       const result = await api("createPairCode");
-      const list = readBrowserDevices();
-      list.push({ deviceId: result.deviceId, webToken: result.webToken, name: "Android" });
+      if (!result.deviceId || !result.webToken || !result.pairCode) {
+        throw new Error("GASから登録情報が不足して返されました。GASの登録APIを確認してください。");
+      }
+      const list = readBrowserDevices().filter(x => x.deviceId !== String(result.deviceId).trim());
+      list.push({ deviceId: String(result.deviceId).trim(), webToken: String(result.webToken).trim(), name: "Android" });
       saveBrowserDevices(list);
       $("pairCodeText").textContent = result.pairCode;
       $("pairResult").hidden = false;
