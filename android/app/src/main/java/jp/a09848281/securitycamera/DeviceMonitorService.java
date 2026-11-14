@@ -96,6 +96,14 @@ public class DeviceMonitorService extends Service {
         try {
             if ("start_session".equals(command)) {
                 startMediaFromCommand();
+            } else if ("restart_session".equals(command)) {
+                Intent stop = new Intent(this, WebRtcSessionService.class);
+                stop.setAction(WebRtcSessionService.ACTION_STOP);
+                startService(stop);
+                if (scheduler != null && !scheduler.isShutdown()) {
+                    scheduler.schedule(this::startMediaFromCommand, 3, TimeUnit.SECONDS);
+                }
+                update("再接続要求を受信しました。現在のセッションを終了して再起動します。", false);
             } else if ("stop_session".equals(command)) {
                 Intent stop = new Intent(this, WebRtcSessionService.class);
                 stop.setAction(WebRtcSessionService.ACTION_STOP);
