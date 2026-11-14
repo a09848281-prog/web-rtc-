@@ -248,10 +248,12 @@ public class WebRtcSessionService extends Service {
                     state == PeerConnection.IceConnectionState.COMPLETED) {
                     notifyStatus("WebとRTC接続しました。待機チャネルを維持しています。");
                 } else if (state == PeerConnection.IceConnectionState.FAILED) {
-                    notifyStatus("RTC接続が失敗しました。再接続を試みます。");
+                    notifyStatus("RTC接続が失敗しました。映像・音声を停止して再接続を試みます。");
+                    if (mediaActive) stopMediaOnly();
                     schedulePeerRestart(2500);
                 } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
-                    notifyStatus("RTC通信が一時切断されました。再接続を確認しています。");
+                    notifyStatus("RTC通信が一時切断されました。映像・音声を停止して再接続を確認しています。");
+                    if (mediaActive) stopMediaOnly();
                     schedulePeerRestart(12000);
                 }
             }
@@ -364,7 +366,8 @@ public class WebRtcSessionService extends Service {
                 if (channel.state() == DataChannel.State.OPEN) {
                     onControlChannelReady();
                 } else if (channel.state() == DataChannel.State.CLOSED) {
-                    notifyStatus("RTC操作チャネルが閉じました。再接続を試みます。");
+                    notifyStatus("RTC操作チャネルが閉じました。映像・音声を停止します。");
+                    if (mediaActive) stopMediaOnly();
                 }
             }
 
