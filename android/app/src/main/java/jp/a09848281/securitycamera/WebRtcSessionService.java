@@ -16,6 +16,9 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 
 import org.json.JSONObject;
 import org.json.JSONArray;
@@ -40,6 +43,7 @@ public class WebRtcSessionService extends Service {
     private static final int NOTIFICATION_ID = 42;
 
     private final ScheduledExecutorService io = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
     private final ExecutorService startup = Executors.newSingleThreadExecutor();
     private static volatile boolean webRtcInitialized = false;
     private volatile String startupStage = "待機中";
@@ -70,6 +74,8 @@ public class WebRtcSessionService extends Service {
     private volatile int lastFrameWidth = 0;
     private volatile int lastFrameHeight = 0;
     private volatile int observedFps = 0;
+    private volatile long cameraStartAt = 0L;
+    private volatile int cameraRecoveryCount = 0;
     private volatile String networkMode = "auto";
     private volatile String powerMode = "auto";
     private PowerManager.WakeLock wakeLock;
@@ -88,7 +94,8 @@ public class WebRtcSessionService extends Service {
         }
         if (ACTION_COMMAND.equals(intent.getAction())) {
             handleRemoteCommand(intent);
-            return START_STICKY;
+            if (!active) stopSelf(startId);
+            return START_NOT_STICKY;
         }
         if (ACTION_START.equals(intent.getAction()) && !active) {
             beginSession();
@@ -242,6 +249,7 @@ public class WebRtcSessionService extends Service {
             startupStage = "カメラ映像取得開始";
             int[] quality = calculateQuality(prefs);
             cameraCapturer.startCapture(quality[0], quality[1], quality[2]);
+            cameraStartAt = System.currentTimeMillis();
             applySenderBitrate(quality[3]);
 
             startupStage = "接続情報作成";
@@ -269,6 +277,7 @@ public class WebRtcSessionService extends Service {
             }, offerConstraints);
 
             io.scheduleWithFixedDelay(this::pollSignals, 1, 2, TimeUnit.SECONDS);
+            watchdog.scheduleWithFixedDelay(this::monitorVideoFrames, 12, 10, TimeUnit.SECONDS);
             notifyStatus("カメラ・マイクを開始しました。画面ロック後も継続を試みます。");
         } catch (Exception error) {
             fail("開始失敗（" + startupStage + "）: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
@@ -297,6 +306,29 @@ public class WebRtcSessionService extends Service {
                 .putInt("videoFps", observedFps)
                 .putLong("lastVideoFrameAt", lastFrameAt)
                 .apply();
+        }
+    }
+
+    private void monitorVideoFrames() {
+        if (!active || cameraCapturer == null || cameraStartAt == 0L) return;
+        long now = System.currentTimeMillis();
+        long reference = lastFrameAt > 0L ? lastFrameAt : cameraStartAt;
+        if (now - reference < 10000L) return;
+        if (cameraRecoveryCount >= 2) {
+            fail("映像フレームが停止し、再初期化を2回試しても復旧しませんでした。安全のため監視を停止しました。");
+            return;
+        }
+        cameraRecoveryCount++;
+        notifyStatus("映像停止を検知。カメラを再初期化しています（" + cameraRecoveryCount + "/2）。");
+        try {
+            cameraCapturer.stopCapture();
+            int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
+            cameraCapturer.startCapture(quality[0], quality[1], quality[2]);
+            cameraStartAt = now;
+            lastFrameAt = 0L;
+            applySenderBitrate(quality[3]);
+        } catch (Exception error) {
+            notifyStatus("カメラ再初期化に失敗しました: " + error.getMessage());
         }
     }
 
@@ -339,6 +371,14 @@ public class WebRtcSessionService extends Service {
     private int[] calculateQuality(SharedPreferences prefs) {
         String network = prefs.getString("networkMode", networkMode);
         String power = prefs.getString("powerMode", powerMode);
+        if ("auto".equals(network)) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                Network activeNetwork = cm == null ? null : cm.getActiveNetwork();
+                NetworkCapabilities caps = cm == null || activeNetwork == null ? null : cm.getNetworkCapabilities(activeNetwork);
+                network = caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" : "mobile";
+            } catch (Exception ignored) { network = "mobile"; }
+        }
         int width = 1280, height = 720, fps = 24, bitrate = 1400000;
         if ("wifi".equals(network)) { width = 1920; height = 1080; fps = 30; bitrate = 2500000; }
         else if ("mobile".equals(network)) { width = 640; height = 360; fps = 15; bitrate = 500000; }
@@ -611,6 +651,7 @@ public class WebRtcSessionService extends Service {
         }
         if (peer != null) try { peer.dispose(); } catch (Exception ignored) {}
         if (audioTrack != null) try { audioTrack.dispose(); } catch (Exception ignored) {}
+        watchdog.shutdownNow();
         if (videoTrack != null) {
             if (telemetrySink != null) try { videoTrack.removeSink(telemetrySink); } catch (Exception ignored) {}
             try { videoTrack.dispose(); } catch (Exception ignored) {}
