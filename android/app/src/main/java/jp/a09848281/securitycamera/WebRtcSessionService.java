@@ -473,6 +473,9 @@ public class WebRtcSessionService extends Service {
             applySenderBitrate(quality[3], quality[2]);
             mediaActive = true;
             mediaStarting = false;
+            if (remoteAudioTrack != null) remoteAudioTrack.setEnabled(true);
+            if (watchdogFuture != null) watchdogFuture.cancel(false);
+            watchdogFuture = watchdog.scheduleWithFixedDelay(this::monitorVideoFrames, 10, 5, TimeUnit.SECONDS);
             updateNotification("カメラ・マイク使用中（RTC接続済み）");
             sendDataMessage("MEDIA_STARTED", collectStatus());
             sendTelemetry();
@@ -506,6 +509,8 @@ public class WebRtcSessionService extends Service {
         mediaStarting = false;
         boolean hadMedia = mediaActive || cameraCapturer != null || audioTrack != null || videoTrack != null;
         mediaActive = false;
+        if (watchdogFuture != null) watchdogFuture.cancel(false);
+        watchdogFuture = null;
         releaseMediaResources();
         if (notifyWeb && controlChannel != null && controlChannel.state() == DataChannel.State.OPEN) {
             sendDataMessage("MEDIA_STOPPED", collectStatus());
@@ -804,7 +809,7 @@ public class WebRtcSessionService extends Service {
     }
 
     private void pollSignals() {
-        if (!serviceActive || !offerQueued || remoteDescriptionSet || sessionId.isEmpty()) return;
+        if (!serviceActive || !offerQueued || sessionId.isEmpty()) return;
         try {
             SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
             JSONObject request = auth(prefs);
@@ -1099,8 +1104,28 @@ public class WebRtcSessionService extends Service {
     private void stopWaitingAndService() {
         getSharedPreferences("wsc", MODE_PRIVATE).edit().putBoolean("standbyActive", false).apply();
         stopMediaOnlyInternal(false);
-        if (!sessionId.isEmpty()) sendSignal("bye", "");
         serviceActive = false;
+        final String oldSession = sessionId;
+        if (!oldSession.isEmpty() && !network.isShutdown()) {
+            try {
+                network.execute(() -> {
+                    try {
+                        SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+                        JSONObject request = auth(prefs);
+                        request.put("action", "sendSignal");
+                        request.put("fromRole", "android");
+                        request.put("type", "bye");
+                        request.put("sessionId", oldSession);
+                        request.put("payload", "");
+                        MainActivity.post(prefs.getString("gasUrl", ""), request);
+                    } catch (Exception ignored) {
+                    } finally {
+                        stopSelf();
+                    }
+                });
+                return;
+            } catch (Exception ignored) {}
+        }
         stopSelf();
     }
 
