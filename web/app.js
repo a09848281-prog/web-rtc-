@@ -197,7 +197,7 @@
       " / " + (s.thermalStatus || "取得不可"));
     value("networkValue", s.networkType || "取得不可");
 
-    const cpu = Number(s.cpuLoadPct);
+    const cpu = s.cpuLoadPct == null ? NaN : Number(s.cpuLoadPct);
     const used = Number(s.memoryUsedMb);
     const total = Number(s.memoryTotalMb);
     value("loadValue",
@@ -702,6 +702,15 @@
       $("qualityValue").textContent =
         (Number.isFinite(rtt) ? Math.round(rtt) + "ms" : "取得不可") +
         " / " + (packets > 0 ? Math.max(0, Math.round(packetLost / (packetLost + packets) * 100)) + "%" : "取得不可");
+      if (state.dataChannel && state.dataChannel.readyState === "open") {
+        const lossPct = packets > 0 ? Math.max(0, Math.round(packetLost / (packetLost + packets) * 100)) : null;
+        try {
+          sendControl("NETWORK_STATS", {
+            rttMs: Number.isFinite(rtt) ? Math.round(rtt) : null,
+            packetLossPct: lossPct
+          });
+        } catch (_) {}
+      }
       $("androidAudioState").textContent = bytes > 0 ? "Android音声/映像: RTC受信中" : "Android音声: 待機中";
     } catch (_) {}
   }
