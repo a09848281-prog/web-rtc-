@@ -394,13 +394,13 @@
     }
   }
 
-  function scheduleReconnect(pc, delayMs = 5000) {
+  function scheduleReconnect(pc, delayMs = 5000, force = false) {
     if (state.reconnectTimer || !state.selected) return;
     state.reconnectTimer = setTimeout(() => {
       state.reconnectTimer = null;
       if (state.pc !== pc || !state.selected || document.hidden || state.connecting) return;
       const status = pc.connectionState;
-      if (status === "connected" || status === "connecting") return;
+      if (!force && (status === "connected" || status === "connecting")) return;
       setStatus("RTC接続が切れました。再シグナリングで自動再接続します。");
       closePeer();
       connect();
@@ -425,7 +425,7 @@
       setBadge("RTC切断");
       setStatus("RTC待機接続が切断されました。再接続を試みます。");
       stopPtt();
-      if (state.pc) scheduleReconnect(state.pc, 6000);
+      if (state.pc) scheduleReconnect(state.pc, 6000, true);
     };
     channel.onerror = () => setStatus("RTCデータチャネルで通信エラーが発生しました。");
   }
