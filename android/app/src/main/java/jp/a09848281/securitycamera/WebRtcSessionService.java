@@ -1241,6 +1241,10 @@ public class WebRtcSessionService extends Service {
     }
 
     private void closePeerOnly() {
+        if (offerRenewFuture != null) {
+            offerRenewFuture.cancel(false);
+            offerRenewFuture = null;
+        }
         if (signalPollFuture != null) signalPollFuture.cancel(false);
         signalPollFuture = null;
         if (offerRenewFuture != null) offerRenewFuture.cancel(false);
