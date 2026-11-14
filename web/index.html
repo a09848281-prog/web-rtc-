@@ -18,15 +18,12 @@
   <section class="panel">
     <h2>GAS接続設定</h2>
     <label for="gasUrl">GAS WebアプリURL</label>
-    <input id="gasUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec">
-    <label for="adminKey">管理者キー</label>
-    <input id="adminKey" type="password" autocomplete="off" placeholder="GASのスクリプトプロパティ ADMIN_KEY">
-    <button id="saveUrl" class="secondary">設定を保存・接続確認</button>
-    <p class="hint">管理者キーはこのiPadのブラウザ内に保存されます。共有端末では使用しないでください。</p>
+    <input id="gasUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec"><button id="saveUrl" class="secondary">設定を保存・接続確認</button>
+    <p class="hint">GAS URLは初期設定済みです。通常は変更せず、そのまま接続できます。</p>
   </section>
   <section class="panel">
     <div class="row"><h2>登録済み端末</h2><button id="refresh" class="secondary">更新</button></div>
-    <div id="devices" class="devices"><p class="empty">GAS URLと管理者キーを設定してください。</p></div>
+    <div id="devices" class="devices"><p class="empty">GASに接続すると登録済み端末が表示されます。</p></div>
   </section>
   <section class="panel">
     <h2>新しいAndroidを登録</h2>
