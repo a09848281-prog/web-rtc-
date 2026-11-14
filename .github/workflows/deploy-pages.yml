@@ -1,0 +1,38 @@
+name: Deploy WebRTC Security Camera Web
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'web/**'
+      - 'gas/**'
+      - '.github/workflows/deploy-pages.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate browser JavaScript, GAS syntax and web manifest
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+          node --check < gas/Code.gs
+          python -m json.tool web/manifest.webmanifest > /dev/null
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4
