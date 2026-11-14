@@ -29,26 +29,22 @@ function setup(){
   let sig=ss.getSheetByName(WSC_SIGNAL_SHEET);
   if(!sig)sig=ss.insertSheet(WSC_SIGNAL_SHEET);
   if(sig.getLastRow()===0)sig.appendRow(["signalId","deviceId","sessionId","fromRole","toRole","type","payload","createdAt","consumed"]);
-  return "セットアップ完了。ADMIN_KEYをスクリプトプロパティに設定してください。";
+  return "セットアップ完了。";
 }
 function route_(p){
   const sh=sheet_();
   switch(p.action){
-    case "ping":requireAdmin_(p);return {ok:true};
-    case "createPairCode":requireAdmin_(p);return createPairCode_(sh);
+    case "ping":return {ok:true};
+    case "createPairCode":return createPairCode_(sh);
     case "claimPairCode":return claimPairCode_(sh,p);
-    case "listDevices":requireAdmin_(p);return list_(sh);
+    case "listDevices":return list_(sh);
     case "heartbeat":return heartbeat_(sh,p);
     case "pollCommand":return poll_(sh,p);
-    case "queueCommand":requireAdmin_(p);return queue_(sh,p);
+    case "queueCommand":return queue_(sh,p);
     case "sendSignal":return sendSignal_(p);
     case "pollSignals":return pollSignals_(p);
     default:throw new Error("未対応の操作です。");
   }
-}
-function requireAdmin_(p){
-  const key=PropertiesService.getScriptProperties().getProperty("ADMIN_KEY");
-  if(!key||!constantTimeEqual_(String(p.adminKey||""),key))throw new Error("管理者キーが違います。");
 }
 function createPairCode_(sh){
   const lock=LockService.getScriptLock();lock.waitLock(10000);
@@ -116,7 +112,7 @@ function queue_(sh,p){
 }
 function sendSignal_(p){
   const role=String(p.fromRole||""),deviceId=String(p.deviceId||""),sessionId=String(p.sessionId||"");
-  if(role==="android")authRow_(sheet_(),p);else if(role==="web")requireAdmin_(p);else throw new Error("送信元が不正です。");
+  if(role==="android")authRow_(sheet_(),p);else if(role!=="web")throw new Error("送信元が不正です。");
   if(!deviceId||deviceId.length>128)throw new Error("端末IDが不正です。");
   if(!sessionId||sessionId.length>128)throw new Error("セッションIDが不正です。");
   const to=role==="android"?"web":"android",type=String(p.type||"");
@@ -143,7 +139,7 @@ function pruneSignals_(sig){
 }
 function pollSignals_(p){
   const role=String(p.role||""),deviceId=String(p.deviceId||"");
-  if(role==="android")authRow_(sheet_(),p);else if(role==="web")requireAdmin_(p);else throw new Error("受信側が不正です。");
+  if(role==="android")authRow_(sheet_(),p);else if(role!=="web")throw new Error("受信側が不正です。");
   if(!deviceId||deviceId.length>128)throw new Error("端末IDが不正です。");
   const sig=signalSheet_(),lock=LockService.getScriptLock();lock.waitLock(10000);
   try{
@@ -172,5 +168,4 @@ function signalSheet_(){
   return sh;
 }
 function sha_(s){return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,s).map(b=>(b<0?b+256:b).toString(16).padStart(2,"0")).join("");}
-function constantTimeEqual_(a,b){if(a.length!==b.length)return false;let result=0;for(let i=0;i<a.length;i++)result|=a.charCodeAt(i)^b.charCodeAt(i);return result===0;}
 function json_(value){return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);}
