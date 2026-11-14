@@ -1,48 +1,52 @@
 # 開発状況（2026-11-14）
 
-## 実装済み
-- Java Android Gradleプロジェクト
-- ManifestのACCESS_NETWORK_STATE / Wi-Fi / Foreground Service権限
-- Androidの6桁ペアリング・端末トークン登録
-- GASによる端末一覧、heartbeat、接続要求、SDP/ICEシグナリング
-- Android WebRTCのカメラ/マイク送信サービス土台
-- GitHub Pages向けWeb管理画面
-- 白背景のレスポンシブUI
-- GitHub ActionsのAndroid APKビルドとWeb構文検査
-- 背面カメラを初期選択、Camera1 fallback、TURN URLの受け入れ
-- 待機時の長時間WakeLockを廃止し、低頻度pollingへ変更
+この文書はGitHubへ反映したコードと、実機確認の必要な項目を分けて記録します。APKのビルド成功だけでは完成扱いにしません。
 
-## 検証済み
-- Android APK：GitHub Actions Build成功（run #6）
-- APK artifact：生成・取得済み（debug APK）
-- Android Manifestの必須permissionチェック成功
-- Web JavaScript / GAS / webmanifest構文チェック成功
-- GitHub Pages deployment：未完了。リポジトリのSettings → PagesでSourceをGitHub Actionsに設定する必要あり
+## 今回コードへ追加・変更したもの
 
-## 過去エラーへの対策
-- 以前不足していたACCESS_NETWORK_STATEをManifestへ追加。
-- カメラ、マイク、通知権限を開始前に検査。
-- WebRTC初期化/カメラ初期化をワーカースレッドで実行し、失敗段階を保存・通知。
-- GASネットワーク処理をUIスレッドから分離。
-- TURN/STUN URLをネイティブICE設定で受け付ける。
+- Web画面を白基調・iPad横画面向けの大きなライブ映像ビューへ変更
+- 左側に端末一覧、端末操作、状態、通信モード、電力モード、PTT、スケジュールを配置
+- Webの「接続・自動起動」からGASにstart_session指令を送信する経路
+- Webマイク許可表示、押している間だけ送信するPTTトラック制御
+- リモート音声ミュート、全画面、カメラ切替、監視終了
+- GASのコマンドキューにswitch_camera / set_modes / set_scheduleを追加
+- Devicesシートに状態JSON列を追加し、端末状態をWebへ返す
+- Android待機を45秒固定ポーリングから通常5秒・通信失敗時10〜30秒の段階的再試行に変更
+- 待機時のカメラ・マイク停止、接続要求時のメディア起動試行、停止後の待機継続
+- バッテリー、充電、バッテリー温度、熱状態、ネットワーク、メモリ、映像幅・高さ・FPSの取得可能範囲の送信
+- バッテリー20%警告、Android熱状態SEVERE以上のメディア停止
+- カメラフレーム停止検出と再初期化を最大2回試行
+- 通信・電力モードの画質・FPS・ビットレート調整、Wi-Fi / モバイル通信の自動判定
+- PWAキャッシュバージョンを1.1.0へ更新
 
-## 未完了
-- FCM受信サービス（Firebaseプロジェクト・google-services.json等の設定が必要）
-- TURN資格情報の設定画面 / 安全な配布経路
-- 遠隔カメラ切替
-- WebからAndroidへのPTT音声
-- 通信/電力モードの実制御
-- 熱状態監視・高温時の強制停止
-- 暗闇/フレーム停止/バッテリー警告
-- スケジュール
-- Android 13実機、iPad Safari、PCの実通信検証
+## この環境ではまだ実機確認できていないもの
 
-## 6項目チェック
-- [x] ACCESS_NETWORK_STATEを追加
-- [x] 権限確認と例外表示
-- [x] Android利用者の明示操作でメディア開始
-- [x] GAS通信をバックグラウンド実行
-- [x] GitHub Actions APKビルド成功
+- GitHub Actionsによる今回の最新APKビルド
+- Android 13 / Galaxy A22 5Gでのインストール・権限・待機サービス
+- Androidバックグラウンドからのカメラ・マイク起動（OS制限により拒否される場合がある）
+- WebRTC映像・双方向音声・PTTの実通信
+- 遠隔カメラ切替、モード変更、スケジュール
+- 画面ロック・長時間稼働・ネットワーク再接続
+- iPad SafariとPC Chrome/Edge
+- 熱停止・バッテリー警告の実端末イベント
+
+## 未実装 / 制限付き
+
+- FCMはFirebase禁止のため実装しない。代わりにGASポーリングを使用。
+- TURNサーバー自体と資格情報の配布UIは未提供。現在はSTUN中心。
+- CPU負荷は正確に取得できず「取得不可」。メモリはAndroidから取得。
+- WebRTCの詳細なRTT・packet lossの常時テレメトリは未完了。
+- 暗闇検知はWebプレビュー映像の平均輝度ベース。暗視機能はない。
+- AndroidのOS制限を回避する無人カメラ起動は行わない。
+- 管理者ログイン / Web側のユーザー認証は未実装。個人利用・信頼できる範囲限定。
+
+## 必須6項目チェック
+
+- [x] ACCESS_NETWORK_STATEをManifestに宣言
+- [x] カメラ・マイク・通知の権限確認と日本語エラー表示
+- [x] WebRTC初期化・カメラ初期化の例外処理
+- [x] Foreground Service通知と停止導線
+- [x] GAS通信の例外処理・再試行
 - [ ] Android 13実機で画面ロック・長時間・再接続を検証
 
-ビルド成功と実機動作確認は別の判定です。
+実機で未確認の項目は未完了です。
