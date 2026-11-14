@@ -55,7 +55,7 @@ public class DeviceMonitorService extends Service {
             if (url.isEmpty() || id.isEmpty() || token.isEmpty()) {
                 update("端末未登録です。アプリを開いて6桁コードを登録してください。", true);
                 retrySeconds = 10;
-                schedulePoll(retrySeconds);
+                nextDelay = retrySeconds;
                 return;
             }
 
@@ -179,6 +179,12 @@ public class DeviceMonitorService extends Service {
             }
         } catch (Exception ignored) {}
         out.put("cpuLoadPct", JSONObject.NULL);
+        try {
+            SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+            if (prefs.contains("videoWidth")) out.put("width", prefs.getInt("videoWidth", 0));
+            if (prefs.contains("videoHeight")) out.put("height", prefs.getInt("videoHeight", 0));
+            if (prefs.contains("videoFps")) out.put("fps", prefs.getInt("videoFps", 0));
+        } catch (Exception ignored) {}
         return out;
     }
 
