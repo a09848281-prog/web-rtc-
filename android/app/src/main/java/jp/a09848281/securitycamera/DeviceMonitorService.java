@@ -251,7 +251,7 @@ public class DeviceMonitorService extends Service {
             int current = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
             int from = parseMinutes(start), to = parseMinutes(end);
             boolean overnight = from > to;
-            int scheduleDay = overnight && current < to ? (day == Calendar.SUNDAY ? Calendar.SATURDAY : day - 2) : day;
+            int scheduleDay = overnight && current < to ? (day == Calendar.SUNDAY ? Calendar.SATURDAY : day - 1) : day;
             String days = schedule.optString("days", "everyday");
             boolean dayAllowed = !"weekdays".equals(days) || (scheduleDay != Calendar.SATURDAY && scheduleDay != Calendar.SUNDAY);
             if ("weekend".equals(days)) dayAllowed = scheduleDay == Calendar.SATURDAY || scheduleDay == Calendar.SUNDAY;
