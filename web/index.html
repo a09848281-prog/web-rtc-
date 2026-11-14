@@ -71,7 +71,15 @@
     <section class="side-section">
       <h2>監視スケジュール</h2>
       <label class="check-row"><input id="scheduleEnabled" type="checkbox"> スケジュールを有効にする</label>
-      <div class="setting-row"><label for="scheduleDays">曜日</label><select id="scheduleDays"><option value="weekdays">月〜金</option><option value="weekend">土・日</option><option value="everyday">毎日</option></select></div>
+      <div class="day-select" id="scheduleDays">
+        <label><input type="checkbox" name="scheduleDay" value="MON" checked>月</label>
+        <label><input type="checkbox" name="scheduleDay" value="TUE" checked>火</label>
+        <label><input type="checkbox" name="scheduleDay" value="WED" checked>水</label>
+        <label><input type="checkbox" name="scheduleDay" value="THU" checked>木</label>
+        <label><input type="checkbox" name="scheduleDay" value="FRI" checked>金</label>
+        <label><input type="checkbox" name="scheduleDay" value="SAT">土</label>
+        <label><input type="checkbox" name="scheduleDay" value="SUN">日</label>
+      </div>
       <div class="time-row"><label>開始 <input id="scheduleStart" type="time" value="08:00"></label><label>終了 <input id="scheduleEnd" type="time" value="20:00"></label></div>
       <button id="saveSchedule" class="button button-light full" type="button">スケジュールを保存</button>
       <p class="small-note">Android OSがバックグラウンドでのカメラ起動を許可しない場合、通知からの操作が必要です。</p>
