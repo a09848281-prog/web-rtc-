@@ -28,7 +28,8 @@
     lastBytes: 0,
     lastFrameAt: 0,
     darkCount: 0,
-    signalsFinished: false
+    signalsFinished: false,
+    reconnectTimer: null
   };
 
   const savedUrl = localStorage.getItem("wsc_gas_url") || window.RDC_CONFIG?.GAS_URL || "";
@@ -305,8 +306,10 @@
   function closePeer() {
     clearInterval(state.statsTimer);
     clearInterval(state.darkTimer);
+    clearTimeout(state.reconnectTimer);
     state.statsTimer = null;
     state.darkTimer = null;
+    state.reconnectTimer = null;
 
     if (state.dataChannel) {
       try { state.dataChannel.close(); } catch (_) {}
@@ -385,6 +388,19 @@
     }
   }
 
+  function scheduleReconnect(pc, delayMs = 5000) {
+    if (state.reconnectTimer || !state.selected) return;
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      if (state.pc !== pc || !state.selected || document.hidden || state.connecting) return;
+      const status = pc.connectionState;
+      if (status === "connected" || status === "connecting") return;
+      setStatus("RTC接続が切れました。再シグナリングで自動再接続します。");
+      closePeer();
+      connect();
+    }, delayMs);
+  }
+
   function configureDataChannel(channel) {
     state.dataChannel = channel;
     channel.onopen = () => {
@@ -401,8 +417,9 @@
     channel.onclose = () => {
       setConnection("RTC待機接続が切断されました", "error");
       setBadge("RTC切断");
-      setStatus("RTC待機接続が切断されました。Androidの待機を再開し、Webで再接続してください。");
+      setStatus("RTC待機接続が切断されました。再接続を試みます。");
       stopPtt();
+      if (state.pc) scheduleReconnect(state.pc, 6000);
     };
     channel.onerror = () => setStatus("RTCデータチャネルで通信エラーが発生しました。");
   }
@@ -445,9 +462,11 @@
         setConnection("RTC接続済み", "online");
       } else if (pc.iceConnectionState === "failed") {
         setConnection("RTC接続失敗", "error");
-        setStatus("直接接続できません。ネットワークによってはTURNサーバーが必要です。");
+        setStatus("直接接続できません。ネットワークによってはTURNサーバーが必要です。再接続を試みます。");
+        scheduleReconnect(pc, 3000);
       } else if (pc.iceConnectionState === "disconnected") {
         setConnection("RTC再接続中", "error");
+        scheduleReconnect(pc, 12000);
       }
     };
 
@@ -458,6 +477,10 @@
         setConnection("RTC切断", "error");
         setBadge("RTC切断");
         $("staleBadge").hidden = false;
+        scheduleReconnect(pc, 3000);
+      } else if (pc.connectionState === "disconnected") {
+        setConnection("RTC再接続中", "error");
+        scheduleReconnect(pc, 12000);
       }
     };
 
