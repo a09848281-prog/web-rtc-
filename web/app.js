@@ -454,9 +454,13 @@
         event.track.onmute = () => $("androidAudioState").textContent = "Android音声: ミュート/停止";
       }
       if (event.track.kind === "video") {
+        video.onloadedmetadata = () => {
+          if (video.videoWidth > 0) $("videoPlaceholder").hidden = true;
+        };
         event.track.onunmute = () => {
-          $("videoPlaceholder").hidden = false;
-          video.play().catch(() => setStatus("映像受信中です。音声再生ボタンを押してください。"));
+          video.play().then(() => {
+            if (video.videoWidth > 0) $("videoPlaceholder").hidden = true;
+          }).catch(() => setStatus("映像受信中です。音声再生ボタンを押してください。"));
         };
       }
       video.play().catch(() => {});
@@ -884,6 +888,10 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopPtt();
+    } else if (state.selected && state.pc &&
+      state.pc.connectionState !== "connected" &&
+      (!state.dataChannel || state.dataChannel.readyState !== "open")) {
+      scheduleReconnect(state.pc, 800, true);
     }
   });
 
