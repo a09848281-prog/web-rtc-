@@ -4,7 +4,6 @@
 1. Google Sheetsを作成し、拡張機能 → Apps Scriptを開く。
 2. `gas/Code.gs` を貼り付け、保存。
 3. `setup()` を一度実行してDevices / Signalsを作成。
-4. Apps Scriptのプロジェクト設定 → スクリプトプロパティに `ADMIN_KEY` を設定。長いランダム文字列を推奨。
 5. デプロイ → 新しいデプロイ → ウェブアプリ。実行ユーザーは自分、アクセスできるユーザーは全員。
 6. 発行された `https://script.google.com/macros/s/.../exec` を控える。
 
@@ -12,7 +11,7 @@
 1. リポジトリ Settings → Pages を開く。
 2. Sourceを「GitHub Actions」にする。
 3. Actions成功後、`https://a09848281-prog.github.io/web-rtc-/` を開く。
-4. GAS URLとADMIN_KEYを設定して接続確認。
+4. GAS URLは `web/config.js` に設定済みなので、通常は変更せず接続確認。
 
 ## APK
 1. GitHub → Actions → Build WebRTC Security Camera APK。
@@ -30,6 +29,8 @@
 4. Web側で映像・音声に接続。
 
 ## 注意
+- 管理者キー認証は無効化されています。GitHub Pagesを見られる人は端末一覧の閲覧、登録コード発行、接続要求などを実行できます。個人利用・信頼できる範囲でのみ公開してください。
+- GASコードを変更した後は、Apps Scriptで「デプロイを管理」→編集→新バージョンを選んで再デプロイしてください。既存URLを維持できます。
 - APKはdebug署名。配布用署名ではない。
 - FCMはFirebaseプロジェクトとアプリ設定が必要。設定前はGASポーリングが暫定方式。
 - TURNは必要環境で別途設定。資格情報を公開リポジトリへ保存しない。
