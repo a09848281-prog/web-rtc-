@@ -1,11 +1,11 @@
 "use strict";
-const CACHE_NAME = "wsc-shell-v1.1.0";
+const CACHE_NAME = "wsc-shell-v2.0.0";
 const SHELL = [
   "./",
   "./index.html",
-  "./style.css?v=1.1.0",
-  "./app.js?v=1.1.0",
-  "./config.js?v=1.1.0",
+  "./style.css?v=2.0.0",
+  "./app.js?v=2.0.0",
+  "./config.js?v=2.0.0",
   "./manifest.webmanifest"
 ];
 self.addEventListener("install", event => {
