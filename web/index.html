@@ -8,47 +8,53 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>WebRTC Security Camera</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=1.1.0">
+<link rel="stylesheet" href="style.css?v=2.0.0">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">●</span><div><h1>Security Camera</h1><p>ライブ映像モニター</p></div></div>
-  <div class="top-status"><span id="connectionDot" class="status-dot"></span><strong id="apiState">サーバー未接続</strong><span id="connectionState">待機中</span></div>
+  <div class="brand"><span class="brand-mark">●</span><div><h1>WebRTC Security Camera</h1><p>リアルタイム・カメラモニター</p></div></div>
+  <div class="top-status"><span id="connectionDot" class="status-dot"></span><strong id="apiState">シグナリング未接続</strong><span id="connectionState">待機中</span></div>
 </header>
+
 <main class="layout">
   <aside class="sidebar">
     <section class="side-section">
-      <div class="section-heading"><h2>カメラ端末</h2><button id="refresh" class="icon-button" type="button" aria-label="端末一覧を更新">↻</button></div>
-      <div id="devices" class="devices"><p class="empty">GASに接続すると登録端末が表示されます。</p></div>
-      <button id="createPair" class="button button-light full" type="button">＋ 新しい端末を登録</button>
-      <div id="pairResult" class="pair-result" hidden><span>Androidに入力する登録コード</span><strong id="pairCodeText"></strong><small>10分以内にAndroidへ入力してください。</small></div>
+      <div class="section-heading"><h2>Android端末</h2><button id="refresh" class="icon-button" type="button" aria-label="端末一覧を更新">↻</button></div>
+      <div id="devices" class="devices"><p class="empty">登録したAndroid端末がここに表示されます。</p></div>
+      <button id="createPair" class="button button-light full" type="button">＋ Androidを新規登録</button>
+      <div id="pairResult" class="pair-result" hidden><span>Androidアプリに入力する6桁コード</span><strong id="pairCodeText"></strong><small>有効期限は10分です。一度だけ使用できます。</small></div>
       <p id="message" class="message" role="status"></p>
     </section>
 
-    <section class="side-section" id="controlPanel" hidden>
+    <section class="side-section controls" id="controlPanel" hidden>
       <div class="section-heading"><h2 id="selectedName">端末操作</h2><button id="closeControl" class="text-button" type="button">閉じる</button></div>
-      <button id="viewBtn" class="button button-primary full" type="button">▶ 接続・自動起動</button>
-      <button id="endViewBtn" class="button button-danger full" type="button">■ 監視終了</button>
+      <button id="viewBtn" class="button button-primary full start-button" type="button">▶ 接続・映像開始</button>
+      <button id="endViewBtn" class="button button-danger full" type="button">■ 映像・音声を切断</button>
+      <p class="small-note">切断してもRTC待機接続は維持します。次回はもう一度「接続・映像開始」を押してください。</p>
+
       <div class="control-grid">
-        <button id="switchCamera" class="button button-light" type="button">↻ カメラ切替</button>
+        <button id="switchCamera" class="button button-light" type="button" disabled>↻ カメラ切替</button>
         <button id="muteRemote" class="button button-light" type="button">🔊 音声ミュート</button>
         <button id="fullscreen" class="button button-light" type="button">⛶ 全画面</button>
         <button id="statusRequest" class="button button-light" type="button">端末状態更新</button>
       </div>
+
       <div class="side-divider"></div>
+      <h3>通信・電力</h3>
       <div class="setting-row"><label for="networkMode">通信モード</label><select id="networkMode"><option value="auto">自動</option><option value="wifi">Wi-Fi高画質</option><option value="mobile">モバイル低画質</option></select></div>
       <div class="setting-row"><label for="powerMode">電力モード</label><select id="powerMode"><option value="auto">自動</option><option value="eco">省電力</option><option value="normal">通常</option><option value="performance">高性能</option></select></div>
-      <button id="applyModes" class="button button-light full" type="button">設定をAndroidへ送信</button>
+      <button id="applyModes" class="button button-light full" type="button">設定を適用</button>
+
       <div class="side-divider"></div>
-      <h3>プッシュトゥトーク</h3>
-      <p class="small-note">マイクボタンを押している間だけ、Webの音声をAndroidへ送信します。</p>
+      <h3>プッシュトゥトーク（PTT）</h3>
+      <p class="small-note">Webマイクは許可した場合だけ使用します。ボタンを押している間だけAndroidへ音声を送信します。</p>
       <div class="mic-row"><span id="micState" class="mic-state">マイク未許可</span><button id="requestMic" class="button button-light" type="button">マイクを許可</button></div>
       <button id="pttButton" class="ptt-button" type="button" disabled>🎙 押して話す</button>
-      <p id="pttStatus" class="small-note" aria-live="polite">マイク許可後に使用できます。</p>
+      <p id="pttStatus" class="small-note" aria-live="polite">接続後に使用できます。</p>
     </section>
 
     <section class="side-section">
-      <div class="section-heading"><h2>端末状態</h2><span class="live-label">LIVE</span></div>
+      <div class="section-heading"><h2>端末状態</h2><span class="live-label">RTC</span></div>
       <dl class="telemetry">
         <div><dt>バッテリー</dt><dd id="batteryValue">取得待ち</dd></div>
         <div><dt>充電状態</dt><dd id="chargingValue">取得待ち</dd></div>
@@ -56,6 +62,7 @@
         <div><dt>通信</dt><dd id="networkValue">取得待ち</dd></div>
         <div><dt>CPU / メモリ</dt><dd id="loadValue">取得待ち</dd></div>
         <div><dt>映像FPS / 解像度</dt><dd id="videoValue">取得待ち</dd></div>
+        <div><dt>RTT / パケット損失</dt><dd id="qualityValue">取得待ち</dd></div>
       </dl>
       <p id="healthWarning" class="warning" hidden></p>
     </section>
@@ -66,7 +73,7 @@
       <div class="setting-row"><label for="scheduleDays">曜日</label><select id="scheduleDays"><option value="weekdays">月〜金</option><option value="weekend">土・日</option><option value="everyday">毎日</option></select></div>
       <div class="time-row"><label>開始 <input id="scheduleStart" type="time" value="08:00"></label><label>終了 <input id="scheduleEnd" type="time" value="20:00"></label></div>
       <button id="saveSchedule" class="button button-light full" type="button">スケジュールを保存</button>
-      <p class="small-note">開始時刻にAndroid OSがカメラ起動を許可しない場合は通知から操作が必要です。</p>
+      <p class="small-note">Android OSがバックグラウンドでのカメラ起動を許可しない場合、通知からの操作が必要です。</p>
     </section>
 
     <details class="side-section advanced">
@@ -74,20 +81,20 @@
       <label for="gasUrl">GAS WebアプリURL</label>
       <input id="gasUrl" type="url" autocomplete="url">
       <button id="saveUrl" class="button button-light full" type="button">保存・接続確認</button>
-      <p class="small-note">Firebaseは使用しません。AndroidはGASへ短周期で接続要求を確認します。映像・音声はWebRTCで端末間通信します。</p>
+      <p class="small-note">Firebase/FCMは使用しません。GASは登録・初回ペアリング・切断後の再シグナリングだけに使用します。通常待機と操作指令はRTCデータチャネル、映像・音声はWebRTC P2Pです。</p>
     </details>
   </aside>
 
   <section class="viewer">
     <div class="viewer-heading">
       <div><h2 id="viewerTitle">ライブ映像</h2><p id="viewerSub">Android端末を選択して接続してください。</p></div>
-      <div class="viewer-actions"><button id="enablePlayback" class="button button-light" type="button">🔊 再生を有効化</button><span id="mediaBadge" class="media-badge">未接続</span></div>
+      <div class="viewer-actions"><button id="enablePlayback" class="button button-light" type="button">🔊 音声再生を許可</button><span id="mediaBadge" class="media-badge">未接続</span></div>
     </div>
     <div class="video-frame" id="videoFrame">
       <video id="remoteVideo" autoplay playsinline></video>
-      <div id="videoPlaceholder" class="video-placeholder"><div class="camera-icon">▣</div><strong>映像待機中</strong><span>接続すると、ここにライブ映像が表示されます。</span></div>
-      <div id="staleBadge" class="stale-badge" hidden>映像が停止しています</div>
-      <div class="video-overlay"><span id="resolutionOverlay">解像度 --</span><span id="fpsOverlay">FPS --</span><span id="iceOverlay">ICE --</span></div>
+      <div id="videoPlaceholder" class="video-placeholder"><div class="camera-icon">▣</div><strong>ライブ映像待機中</strong><span>端末を選択し、「接続・映像開始」を押してください。</span></div>
+      <div id="staleBadge" class="stale-badge" hidden>映像が停止しています（ライブではありません）</div>
+      <div class="video-overlay"><span id="resolutionOverlay">解像度 --</span><span id="fpsOverlay">FPS --</span><span id="iceOverlay">RTC --</span></div>
     </div>
     <div class="viewer-footer">
       <p id="commandStatus" role="status">待機中。登録済みAndroidを選択してください。</p>
@@ -95,9 +102,10 @@
     </div>
   </section>
 </main>
-<footer>所有または明確な許可を得た端末だけで使用してください。カメラ・マイク使用中はAndroidの通知とプライバシー表示が出ます。録画・録音は行いません。</footer>
-<script src="config.js?v=1.1.0"></script>
-<script src="app.js?v=1.1.0"></script>
+
+<footer>所有または明確な許可を得た端末だけで使用してください。カメラ・マイク使用時はAndroidの通知とプライバシー表示が出ます。映像・音声の録画・録音は行いません。</footer>
+<script src="config.js?v=2.0.0"></script>
+<script src="app.js?v=2.0.0"></script>
 <script>
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
