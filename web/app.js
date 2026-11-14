@@ -361,6 +361,11 @@
         setBadge("RTC待機中");
         $("switchCamera").disabled = true;
       }
+      if (typeof payload.micMuted === "boolean") {
+        state.androidMicMuted = payload.micMuted;
+        $("muteAndroidMic").textContent = state.androidMicMuted
+          ? "🎙 Androidマイクミュート解除" : "🎙 Androidマイクミュート";
+      }
       $("pttButton").disabled = !state.mediaActive || !state.audioTransceiver;
       if (payload.message) setStatus(String(payload.message));
     } else if (type === "MEDIA_STARTED") {
@@ -709,7 +714,7 @@
       if (moving) {
         state.lastFrameAt = Date.now();
         $("staleBadge").hidden = true;
-        $("videoPlaceholder").hidden = video.videoWidth === 0;
+        $("videoPlaceholder").hidden = video.videoWidth > 0;
       } else if (state.mediaActive && state.lastFrameAt && Date.now() - state.lastFrameAt > 6000) {
         $("staleBadge").hidden = false;
       }
@@ -735,7 +740,7 @@
           });
         } catch (_) {}
       }
-      $("androidAudioState").textContent = bytes > 0 ? "Android音声/映像: RTC受信中" : "Android音声: 待機中";
+      $("androidAudioState").textContent = state.mediaActive ? "Androidマイク: 送信中" : "Androidマイク: 停止";
     } catch (_) {}
   }
 
@@ -879,7 +884,6 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopPtt();
-      stopMedia(false);
     }
   });
 
