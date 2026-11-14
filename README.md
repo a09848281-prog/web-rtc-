@@ -1,35 +1,28 @@
 # WebRTC Security Camera
 
-Android端末を、利用者が明示的に開始するリアルタイム監視カメラとして使い、iPad / PCのブラウザから接続する個人利用プロジェクトです。
+Android端末を、利用者の許可のもとリアルタイム監視カメラとして使用し、iPad / PCのブラウザから映像・音声を確認・操作する個人利用プロジェクトです。
 
 - Android APK：Java + WebRTC + Foreground Service
 - Web：HTML / CSS / JavaScript + GitHub Pages
 - Signaling / 登録：Google Apps Script + Google Sheets
-- Media：WebRTC (DTLS-SRTP)
+- Media：WebRTC（DTLS-SRTP / P2P）
+- Push：Firebase / FCMは使用しない。GASへ通常5秒間隔で指令確認
 - 録画・録音：なし
 
-## ビルド状況
+## 今回のUI / 機能更新
 
-- Android APK：GitHub Actionsのdebug APKビルド成功
-- Web / GAS / manifest：構文チェック成功
-- GitHub Pages：リポジトリ設定でPagesを有効化する必要があります（Settings → Pages → Source: GitHub Actions）
+白基調の大画面ビューア、登録端末一覧、接続・自動起動要求、カメラ切替、ミュート、PTT、通信・電力モード、スケジュール、端末状態表示、バッテリー警告・高温停止・フレーム停止復旧を実装対象にしています。
 
-[最新APKビルド結果](https://github.com/a09848281-prog/web-rtc-/actions/runs/43597309633)  
-[リポジトリ](https://github.com/a09848281-prog/web-rtc-)
+## 公開先
 
-## 認証・公開範囲に関する注意
+- [GitHub Pages](https://a09848281-prog.github.io/web-rtc-/)
+- [GitHub Actions](https://github.com/a09848281-prog/web-rtc-/actions)
+- [Repository](https://github.com/a09848281-prog/web-rtc-)
 
-管理者キー認証は無効化されています。GitHub Pagesを閲覧できる人は、登録済み端末一覧の閲覧、ペアリングコード発行、接続要求などを実行できます。個人利用・信頼できる範囲でのみ公開してください。
+## 重要
 
-## 安全上の重要事項
+Webからの自動接続要求は維持しています。ただしAndroid 13ではバックグラウンドからカメラ・マイクを新規起動できない場合があります。OSが拒否した場合はAndroidの常時通知からアプリを開く必要があります。OS制限を回避する無人起動は行いません。
 
-Android OSの制限に従います。Webから接続要求が届いても、ロック中・バックグラウンド中にカメラ/マイクを無人で新規起動しません。Android側の通知をタップし、利用者が開始します。メディア使用中はForeground Service通知を表示します。
+今回のGASコードはApps Scriptへ貼り付け、「デプロイを管理」→編集→新バージョン→デプロイが必要です。GitHubのCode.gsを更新しただけでは既存GAS URLに反映されません。
 
-## ドキュメント
-
-- [完全機能・開発仕様書](SPECIFICATION.md)
-- [セットアップ手順](docs/SETUP.md)
-- [開発状況・未完了機能](docs/STATUS.md)
-- [Android実装メモ](android/README.md)
-
-この初期ビルドにはペアリング、端末一覧、GASシグナリング、Androidのカメラ/マイク送信土台が含まれます。PTT、遠隔カメラ切替、FCM、温度保護などはまだ未実装です。実機検証前に完成扱いしません。
+管理者認証は未実装です。GitHub Pagesを閲覧できる人が端末一覧・登録コード・指令APIを操作できるため、信頼できる個人利用に限定してください。実機検証が終わるまで完成版として扱わないでください。
