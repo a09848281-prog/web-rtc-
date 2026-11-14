@@ -122,12 +122,7 @@ public class MainActivity extends Activity {
             pendingWaitStart = true;
             requestPermissionsForWaiting();
         });
-        stop.setOnClickListener(v -> {
-            stopService(new Intent(this, DeviceMonitorService.class));
-            prefs.edit().putBoolean("monitoring", false).apply();
-            status.setText("バックグラウンド待機を停止しました。");
-            waitButton.setText("接続待機を開始");
-        });
+        stop.setOnClickListener(v -> stopWaiting());
     }
 
     private String initialStatus() {
@@ -220,6 +215,18 @@ public class MainActivity extends Activity {
         if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)needed.add(Manifest.permission.POST_NOTIFICATIONS);
         if(!needed.isEmpty()){requestPermissions(needed.toArray(new String[0]),PERMISSION_REQUEST);return;}
         startMediaServiceFromVisibleActivity();
+    }
+
+    private void stopWaiting() {
+        try {
+            Intent mediaStop = new Intent(this, WebRtcSessionService.class);
+            mediaStop.setAction(WebRtcSessionService.ACTION_STOP);
+            startService(mediaStop);
+        } catch (Exception ignored) {}
+        stopService(new Intent(this, DeviceMonitorService.class));
+        prefs.edit().putBoolean("monitoring", false).apply();
+        status.setText("カメラ・マイクとバックグラウンド待機を停止しました。");
+        waitButton.setText("接続待機を開始");
     }
 
     private void startMonitor() {
