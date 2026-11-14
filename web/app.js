@@ -793,13 +793,27 @@
     $("createPair").disabled = true;
     try {
       const result = await api("createPairCode");
-      if (!result.deviceId || !result.webToken || !result.pairCode) {
-        throw new Error("GASから登録情報が不足して返されました。GASの登録APIを確認してください。");
+      const deviceId = String(result.deviceId ?? "").trim();
+      const webToken = String(result.webToken ?? "").trim();
+      const pairCode = String(result.pairCode ?? "").trim();
+      const missing = [];
+      if (!deviceId) missing.push("deviceId");
+      if (!webToken) missing.push("webToken");
+      if (!/^\\d{6}$/.test(pairCode)) missing.push("pairCode(6桁)");
+      if (missing.length) {
+        // 値そのもの（特にwebToken）は表示せず、返却された項目名だけを診断表示する。
+        const returnedKeys = Object.keys(result).filter(key => key !== "webToken").join(", ") || "なし";
+        throw new Error(
+          "GAS登録APIの返却内容が不足しています。\\n" +
+          "不足項目: " + missing.join(", ") + "\\n" +
+          "受信した項目名: " + returnedKeys + "\\n" +
+          "GitHubの gas/Code.gs をApps Scriptへ反映し、「新バージョン」で再デプロイしてください。"
+        );
       }
-      const list = readBrowserDevices().filter(x => x.deviceId !== String(result.deviceId).trim());
-      list.push({ deviceId: String(result.deviceId).trim(), webToken: String(result.webToken).trim(), name: "Android" });
+      const list = readBrowserDevices().filter(x => x.deviceId !== deviceId);
+      list.push({ deviceId, webToken, name: "Android" });
       saveBrowserDevices(list);
-      $("pairCodeText").textContent = result.pairCode;
+      $("pairCodeText").textContent = pairCode;
       $("pairResult").hidden = false;
       $("message").textContent = "Androidアプリに6桁コードを入力してください。登録後「更新」を押します。";
       await refreshDevices();
