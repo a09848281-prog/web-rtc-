@@ -117,7 +117,7 @@ function poll_(sh,p){
 }
 function queue_(sh,p){
   const id=String(p.deviceId||""),command=String(p.command||"");
-  const allowed=["start_session","stop_session","request_status","switch_camera","set_modes","set_schedule"];
+  const allowed=["start_session","restart_session","stop_session","request_status","switch_camera","set_modes","set_schedule"];
   if(!allowed.includes(command))throw new Error("許可されていない操作です。");
   let payload={};
   if(p.payload!==undefined&&p.payload!==null){
