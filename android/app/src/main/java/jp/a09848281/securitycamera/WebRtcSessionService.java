@@ -247,10 +247,9 @@ public class WebRtcSessionService extends Service {
             videoTrack.addSink(telemetrySink);
             videoSender = peer.addTrack(videoTrack, Collections.singletonList("wsc_stream"));
             startupStage = "カメラ映像取得開始";
-            int[] quality = calculateQuality(prefs);
-            cameraCapturer.startCapture(quality[0], quality[1], quality[2]);
+            int[] quality = startCaptureWithFallback(calculateQuality(prefs));
             cameraStartAt = System.currentTimeMillis();
-            applySenderBitrate(quality[3]);
+            applySenderBitrate(quality[3], quality[2]);
 
             startupStage = "接続情報作成";
             MediaConstraints offerConstraints = new MediaConstraints();
@@ -322,11 +321,10 @@ public class WebRtcSessionService extends Service {
         notifyStatus("映像停止を検知。カメラを再初期化しています（" + cameraRecoveryCount + "/2）。");
         try {
             cameraCapturer.stopCapture();
-            int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
-            cameraCapturer.startCapture(quality[0], quality[1], quality[2]);
+            int[] quality = startCaptureWithFallback(calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE)));
             cameraStartAt = now;
             lastFrameAt = 0L;
-            applySenderBitrate(quality[3]);
+            applySenderBitrate(quality[3], quality[2]);
         } catch (Exception error) {
             notifyStatus("カメラ再初期化に失敗しました: " + error.getMessage());
         }
@@ -358,9 +356,13 @@ public class WebRtcSessionService extends Service {
                 int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
                 if (cameraCapturer != null && active) {
                     try { cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]); }
-                    catch (Exception e) { notifyStatus("画質変更に失敗しました。現在の設定を維持します。"); }
+                    catch (Exception e) {
+                        try { cameraCapturer.changeCaptureFormat(640, 480, 15); }
+                        catch (Exception ignored) {}
+                        notifyStatus("指定画質に変更できないため低負荷設定を試しました。");
+                    }
                 }
-                applySenderBitrate(quality[3]);
+                applySenderBitrate(quality[3], quality[2]);
                 notifyStatus("通信・電力モードを適用しました。");
             }
         } catch (Exception error) {
@@ -404,13 +406,32 @@ public class WebRtcSessionService extends Service {
         return new int[]{width, height, fps, bitrate};
     }
 
-    private void applySenderBitrate(int maxBitrate) {
+    private int[] startCaptureWithFallback(int[] requested) throws Exception {
+        int[][] attempts = {
+            requested,
+            {1280, 720, 24, Math.min(requested[3], 1400000)},
+            {640, 480, 15, Math.min(requested[3], 600000)}
+        };
+        Exception last = null;
+        for (int i = 0; i < attempts.length; i++) {
+            try {
+                cameraCapturer.startCapture(attempts[i][0], attempts[i][1], attempts[i][2]);
+                if (i > 0) notifyStatus("指定画質に非対応のため " + attempts[i][0] + "×" + attempts[i][1] + " に変更しました。");
+                return attempts[i];
+            } catch (Exception error) {
+                last = error;
+            }
+        }
+        throw last == null ? new Exception("カメラ起動に失敗しました。") : last;
+    }
+
+    private void applySenderBitrate(int maxBitrate, int maxFps) {
         try {
             if (videoSender == null) return;
             RtpParameters parameters = videoSender.getParameters();
             for (RtpParameters.Encoding encoding : parameters.encodings) {
                 encoding.maxBitrateBps = maxBitrate;
-                encoding.maxFramerate = 30;
+                encoding.maxFramerate = maxFps;
             }
             videoSender.setParameters(parameters);
         } catch (Exception error) {
