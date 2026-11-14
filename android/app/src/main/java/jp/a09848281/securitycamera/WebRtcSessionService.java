@@ -119,6 +119,13 @@ public class WebRtcSessionService extends Service {
     private volatile int cameraRecoveryCount = 0;
     private volatile String networkMode = "auto";
     private volatile String powerMode = "auto";
+    private volatile boolean networkDegraded = false;
+    private volatile long networkRttMs = -1L;
+    private volatile int networkLossPercent = -1;
+    private volatile int currentWidth = 0;
+    private volatile int currentHeight = 0;
+    private volatile int currentFps = 0;
+    private volatile int currentBitrate = 0;
 
     private PowerManager.WakeLock wakeLock;
     private AudioManager audioManager;
@@ -412,6 +419,15 @@ public class WebRtcSessionService extends Service {
             case "GET_STATUS":
                 sendDataMessage("STATUS", collectStatus());
                 break;
+            case "NETWORK_STATS":
+                long rtt = payload.optLong("rttMs", -1L);
+                int loss = payload.optInt("packetLossPct", -1);
+                boolean wasDegraded = networkDegraded;
+                networkRttMs = rtt;
+                networkLossPercent = loss;
+                networkDegraded = (rtt >= 0 && rtt >= 350) || (loss >= 0 && loss >= 5);
+                if (wasDegraded != networkDegraded && mediaActive) autoAdaptQuality();
+                break;
             case "SET_SCHEDULE":
                 saveSchedule(payload);
                 break;
@@ -489,6 +505,10 @@ public class WebRtcSessionService extends Service {
 
             startupStage = "映像取得開始";
             int[] quality = startCaptureWithFallback(calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE)));
+            currentWidth = quality[0];
+            currentHeight = quality[1];
+            currentFps = quality[2];
+            currentBitrate = quality[3];
             cameraStartAt = System.currentTimeMillis();
             lastFrameAt = 0L;
             cameraRecoveryCount = 0;
@@ -618,6 +638,10 @@ public class WebRtcSessionService extends Service {
         if (mediaActive && cameraCapturer != null) {
             try {
                 cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]);
+                currentWidth = quality[0];
+                currentHeight = quality[1];
+                currentFps = quality[2];
+                currentBitrate = quality[3];
             } catch (Exception error) {
                 try { cameraCapturer.changeCaptureFormat(640, 480, 15); } catch (Exception ignored) {}
                 notifyStatus("指定画質に変更できないため低負荷設定を試しました。");
@@ -643,6 +667,7 @@ public class WebRtcSessionService extends Service {
         if (!serviceActive) return;
         checkThermalSafety();
         checkSchedule();
+        autoAdaptQuality();
         sendTelemetry();
     }
 
@@ -747,6 +772,8 @@ public class WebRtcSessionService extends Service {
             result.put("fps", observedFps);
             result.put("width", lastFrameWidth);
             result.put("height", lastFrameHeight);
+            result.put("networkRttMs", networkRttMs >= 0 ? networkRttMs : JSONObject.NULL);
+            result.put("networkLossPercent", networkLossPercent >= 0 ? networkLossPercent : JSONObject.NULL);
             result.put("mediaActive", mediaActive);
             result.put("standby", serviceActive);
         } catch (Exception ignored) {}
@@ -970,7 +997,49 @@ public class WebRtcSessionService extends Service {
                 }
             }
         } catch (Exception ignored) {}
+        if (networkDegraded) {
+            if (networkLossPercent >= 10 || networkRttMs >= 700) {
+                width = Math.min(width, 640);
+                height = Math.min(height, 480);
+                fps = Math.min(fps, 12);
+                bitrate = Math.min(bitrate, 400000);
+            } else {
+                width = Math.min(width, 960);
+                height = Math.min(height, 540);
+                fps = Math.min(fps, 15);
+                bitrate = Math.min(bitrate, 850000);
+            }
+        }
         return new int[]{width, height, fps, bitrate};
+    }
+
+    private void autoAdaptQuality() {
+        if (!mediaActive || cameraCapturer == null) return;
+        int[] quality = calculateQuality(getSharedPreferences("wsc", MODE_PRIVATE));
+        if (quality[0] == currentWidth && quality[1] == currentHeight &&
+            quality[2] == currentFps && quality[3] == currentBitrate) return;
+        try {
+            cameraCapturer.changeCaptureFormat(quality[0], quality[1], quality[2]);
+            currentWidth = quality[0];
+            currentHeight = quality[1];
+            currentFps = quality[2];
+            currentBitrate = quality[3];
+            applySenderBitrate(quality[3], quality[2]);
+            notifyStatus("端末温度・バッテリー・ネットワーク状態に合わせて画質を自動調整しました。");
+            sendDataMessage("STATUS", collectStatus());
+        } catch (Exception error) {
+            try {
+                cameraCapturer.changeCaptureFormat(640, 480, 12);
+                currentWidth = 640;
+                currentHeight = 480;
+                currentFps = 12;
+                currentBitrate = Math.min(quality[3], 400000);
+                applySenderBitrate(currentBitrate, currentFps);
+                notifyStatus("通信状態が不安定なため低負荷画質へ変更しました。");
+            } catch (Exception ignored) {
+                notifyStatus("自動画質調整に失敗しました: " + error.getMessage());
+            }
+        }
     }
 
     private int[] startCaptureWithFallback(int[] requested) throws Exception {
