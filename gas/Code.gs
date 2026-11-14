@@ -1,6 +1,7 @@
 const WSC_SHEET = "Devices";
 const WSC_SIGNAL_SHEET = "Signals";
-function doGet(){return json_({ok:true,service:"WebRTC Security Camera GAS",version:5});}
+const WSC_DEVICE_HEADERS = ["deviceId","name","tokenHash","pairCode","paired","lastSeen","status","pendingCommand","pairExpiresAt","statusJson"];
+function doGet(){return json_({ok:true,service:"WebRTC Security Camera GAS",version:6,push:"GAS short polling (Firebase unused)"});}
 function doPost(e){
   const formMode=!!(e&&e.parameter&&e.parameter.rdcPayload);
   const requestId=formMode?String(e.parameter.rdcRequestId||""):"";
@@ -24,8 +25,9 @@ function setup(){
   if(!ss)throw new Error("このスクリプトをGoogle Sheetsから開いてください。");
   let sh=ss.getSheetByName(WSC_SHEET);
   if(!sh)sh=ss.insertSheet(WSC_SHEET);
-  if(sh.getLastRow()===0)sh.appendRow(["deviceId","name","tokenHash","pairCode","paired","lastSeen","status","pendingCommand","pairExpiresAt"]);
-  if(sh.getLastColumn()<9)sh.getRange(1,9).setValue("pairExpiresAt");
+  if(sh.getLastRow()===0)sh.appendRow(WSC_DEVICE_HEADERS);
+  if(sh.getLastColumn()<WSC_DEVICE_HEADERS.length)sh.getRange(1,1,1,WSC_DEVICE_HEADERS.length).setValues([WSC_DEVICE_HEADERS]);
+  else sh.getRange(1,1,1,WSC_DEVICE_HEADERS.length).setValues([WSC_DEVICE_HEADERS]);
   let sig=ss.getSheetByName(WSC_SIGNAL_SHEET);
   if(!sig)sig=ss.insertSheet(WSC_SIGNAL_SHEET);
   if(sig.getLastRow()===0)sig.appendRow(["signalId","deviceId","sessionId","fromRole","toRole","type","payload","createdAt","consumed"]);
@@ -34,7 +36,7 @@ function setup(){
 function route_(p){
   const sh=sheet_();
   switch(p.action){
-    case "ping":return {ok:true};
+    case "ping":return {ok:true,version:6};
     case "createPairCode":return createPairCode_(sh);
     case "claimPairCode":return claimPairCode_(sh,p);
     case "listDevices":return list_(sh);
@@ -54,7 +56,7 @@ function createPairCode_(sh){
       const randomHex=Utilities.getUuid().replace(/-/g,"").substring(0,12);
       code=String(100000+(parseInt(randomHex,16)%900000));
     }while(rows.some((row,index)=>index>0&&String(row[3])===code&&!row[4]&&row[8]&&new Date(row[8]).getTime()>Date.now()));
-    sh.appendRow([Utilities.getUuid(),"Android","",""+code,false,"","pairing","",new Date(Date.now()+10*60*1000)]);
+    sh.appendRow([Utilities.getUuid(),"Android","",""+code,false,"","pairing","",new Date(Date.now()+10*60*1000),""]);
     return {ok:true,pairCode:code,expiresInMinutes:10};
   }finally{lock.releaseLock();}
 }
@@ -75,7 +77,7 @@ function claimPairCode_(sh,p){
         const token=Utilities.getUuid()+Utilities.getUuid(),name=String(p.name||"Android").slice(0,40);
         sh.getRange(i+1,2).setValue(name);sh.getRange(i+1,3).setValue(sha_(token));
         sh.getRange(i+1,4).clearContent();sh.getRange(i+1,5).setValue(true);sh.getRange(i+1,9).clearContent();
-        sh.getRange(i+1,6).setValue(new Date());sh.getRange(i+1,7).setValue("online");
+        sh.getRange(i+1,6).setValue(new Date());sh.getRange(i+1,7).setValue("online");sh.getRange(i+1,10).setValue("{}");
         return {ok:true,deviceId:String(rows[i][0]),deviceToken:token,name:name};
       }
     }
@@ -87,25 +89,45 @@ function list_(sh){
   for(let i=1;i<rows.length;i++){
     if(!rows[i][4])continue;
     const seen=rows[i][5]?new Date(rows[i][5]).getTime():0;
-    devices.push({deviceId:String(rows[i][0]),name:String(rows[i][1]),online:!!seen&&now-seen<90000,lastSeen:rows[i][5]?new Date(rows[i][5]).toLocaleString("ja-JP"):"未接続"});
+    let status={};
+    try{status=JSON.parse(String(rows[i][9]||"{}"));}catch(_){}
+    devices.push({deviceId:String(rows[i][0]),name:String(rows[i][1]),online:!!seen&&now-seen<25000,lastSeen:rows[i][5]?new Date(rows[i][5]).toLocaleString("ja-JP"):"未接続",status:status});
   }
   return {ok:true,devices:devices};
 }
-function heartbeat_(sh,p){const row=authRow_(sh,p);sh.getRange(row,6).setValue(new Date());sh.getRange(row,7).setValue("online");return {ok:true};}
+function heartbeat_(sh,p){
+  const row=authRow_(sh,p);
+  sh.getRange(row,6).setValue(new Date());sh.getRange(row,7).setValue("online");
+  const status=p.status&&typeof p.status==="object"?p.status:{};
+  sh.getRange(row,10).setValue(JSON.stringify(status).slice(0,4000));
+  return {ok:true,serverTime:new Date().toISOString()};
+}
 function poll_(sh,p){
   const row=authRow_(sh,p),lock=LockService.getScriptLock();lock.waitLock(10000);
-  try{const command=sh.getRange(row,8).getValue();if(command)sh.getRange(row,8).clearContent();return {ok:true,command:command||null};}
-  finally{lock.releaseLock();}
+  try{
+    const raw=sh.getRange(row,8).getValue();
+    if(raw)sh.getRange(row,8).clearContent();
+    let command=null;
+    if(raw){try{command=JSON.parse(String(raw));}catch(_){command={command:String(raw),payload:{}};}}
+    return {ok:true,command:command};
+  }finally{lock.releaseLock();}
 }
 function queue_(sh,p){
   const id=String(p.deviceId||""),command=String(p.command||"");
-  const allowed=["start_session","stop_session","request_status"];
+  const allowed=["start_session","stop_session","request_status","switch_camera","set_modes","set_schedule"];
   if(!allowed.includes(command))throw new Error("許可されていない操作です。");
+  let payload={};
+  if(p.payload!==undefined&&p.payload!==null){
+    if(typeof p.payload==="object")payload=p.payload;
+    else{try{payload=JSON.parse(String(p.payload));}catch(_){throw new Error("コマンド設定の形式が不正です。");}}
+  }
+  const serialized=JSON.stringify({command:command,payload:payload,createdAt:Date.now()});
+  if(serialized.length>2000)throw new Error("コマンド設定が大きすぎます。");
   const lock=LockService.getScriptLock();lock.waitLock(10000);
   try{
     const rows=sh.getDataRange().getValues();
     for(let i=1;i<rows.length;i++)if(String(rows[i][0])===id&&rows[i][4]){
-      sh.getRange(i+1,8).setValue(command);return {ok:true};
+      sh.getRange(i+1,8).setValue(serialized);return {ok:true,queued:true};
     }
     throw new Error("端末が見つかりません。");
   }finally{lock.releaseLock();}
@@ -131,7 +153,7 @@ function sendSignal_(p){
 }
 function pruneSignals_(sig){
   const last=sig.getLastRow();if(last<2)return;
-  const cutoff=Date.now()-24*60*60*1000,rows=sig.getRange(2,1,last-1,9).getValues();
+  const cutoff=Date.now()-60*60*1000,rows=sig.getRange(2,1,last-1,9).getValues();
   for(let i=rows.length-1;i>=0;i--){
     const created=rows[i][7] instanceof Date?rows[i][7].getTime():new Date(rows[i][7]).getTime();
     if(!created||created<cutoff)sig.deleteRow(i+2);
