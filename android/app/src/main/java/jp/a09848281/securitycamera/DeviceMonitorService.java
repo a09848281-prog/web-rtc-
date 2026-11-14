@@ -188,7 +188,6 @@ public class DeviceMonitorService extends Service {
                 out.put("memoryTotalMb", mem.totalMem / (1024 * 1024));
             }
         } catch (Exception ignored) {}
-        out.put("cpuLoadPct", JSONObject.NULL);
         try {
             SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
             if (prefs.contains("videoWidth")) out.put("width", prefs.getInt("videoWidth", 0));
