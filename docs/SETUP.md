@@ -4,8 +4,8 @@
 1. Google Sheetsを作成し、拡張機能 → Apps Scriptを開く。
 2. `gas/Code.gs` を貼り付け、保存。
 3. `setup()` を一度実行してDevices / Signalsを作成。
-5. デプロイ → 新しいデプロイ → ウェブアプリ。実行ユーザーは自分、アクセスできるユーザーは全員。
-6. 発行された `https://script.google.com/macros/s/.../exec` を控える。
+4. デプロイ → 新しいデプロイ → ウェブアプリ。実行ユーザーは自分、アクセスできるユーザーは全員。
+5. 発行された `https://script.google.com/macros/s/.../exec` を控える。
 
 ## GitHub Pages
 1. リポジトリ Settings → Pages を開く。
