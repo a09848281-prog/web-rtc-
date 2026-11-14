@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
 import android.os.Build;
+import android.os.BatteryManager;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.Manifest;
@@ -60,7 +61,10 @@ public class WebRtcSessionService extends Service {
     private AudioSource audioSource;
     private AudioTrack audioTrack;
     private VideoTrack videoTrack;
+    private VideoSink telemetrySink;
     private RtpSender videoSender;
+    private volatile long fpsWindowStart = 0L;
+    private volatile int framesInWindow = 0;
     private volatile long lastTelemetryWriteAt = 0L;
     private volatile long lastFrameAt = 0L;
     private volatile int lastFrameWidth = 0;
@@ -232,20 +236,8 @@ public class WebRtcSessionService extends Service {
             cameraCapturer.initialize(textureHelper, getApplicationContext(), videoSource.getCapturerObserver());
             videoTrack = factory.createVideoTrack("wsc_video", videoSource);
             videoTrack.setEnabled(true);
-            videoTrack.addSink(frame -> {
-                lastFrameAt = System.currentTimeMillis();
-                lastFrameWidth = frame.getBuffer().getWidth();
-                lastFrameHeight = frame.getBuffer().getHeight();
-                long now = System.currentTimeMillis();
-                if (now - lastTelemetryWriteAt >= 5000L) {
-                    lastTelemetryWriteAt = now;
-                    getSharedPreferences("wsc", MODE_PRIVATE).edit()
-                        .putInt("videoWidth", lastFrameWidth)
-                        .putInt("videoHeight", lastFrameHeight)
-                        .putLong("lastVideoFrameAt", lastFrameAt)
-                        .apply();
-                }
-            });
+            telemetrySink = frame -> recordVideoFrame(frame);
+            videoTrack.addSink(telemetrySink);
             videoSender = peer.addTrack(videoTrack, Collections.singletonList("wsc_stream"));
             startupStage = "カメラ映像取得開始";
             int[] quality = calculateQuality(prefs);
@@ -282,6 +274,29 @@ public class WebRtcSessionService extends Service {
             fail("開始失敗（" + startupStage + "）: " + (error.getMessage() == null ? error.toString() : error.getMessage()));
         } catch (LinkageError error) {
             fail("ネイティブ処理失敗（" + startupStage + "）: " + error);
+        }
+    }
+
+    private void recordVideoFrame(VideoFrame frame) {
+        long now = System.currentTimeMillis();
+        lastFrameAt = now;
+        lastFrameWidth = frame.getBuffer().getWidth();
+        lastFrameHeight = frame.getBuffer().getHeight();
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
+        framesInWindow++;
+        if (now - fpsWindowStart >= 1000L) {
+            observedFps = Math.round(framesInWindow * 1000f / Math.max(1L, now - fpsWindowStart));
+            framesInWindow = 0;
+            fpsWindowStart = now;
+        }
+        if (now - lastTelemetryWriteAt >= 5000L) {
+            lastTelemetryWriteAt = now;
+            getSharedPreferences("wsc", MODE_PRIVATE).edit()
+                .putInt("videoWidth", lastFrameWidth)
+                .putInt("videoHeight", lastFrameHeight)
+                .putInt("videoFps", observedFps)
+                .putLong("lastVideoFrameAt", lastFrameAt)
+                .apply();
         }
     }
 
@@ -552,6 +567,12 @@ public class WebRtcSessionService extends Service {
     }
 
     private Notification buildNotification(String text) {
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setAction(MainActivity.ACTION_REQUEST_MEDIA);
+        openIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent openPending = PendingIntent.getActivity(
+            this, 43, openIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
         Intent stopIntent = new Intent(this, WebRtcSessionService.class);
         stopIntent.setAction(ACTION_STOP);
         PendingIntent stopPendingIntent = PendingIntent.getService(
@@ -563,6 +584,7 @@ public class WebRtcSessionService extends Service {
         return builder.setSmallIcon(android.R.drawable.presence_video_online)
             .setContentTitle("WebRTC Security Camera")
             .setContentText(text)
+            .setContentIntent(openPending)
             .addAction(new Notification.Action.Builder(
                 Icon.createWithResource(this, android.R.drawable.ic_media_pause),
                 "セッション停止", stopPendingIntent
@@ -590,7 +612,7 @@ public class WebRtcSessionService extends Service {
         if (peer != null) try { peer.dispose(); } catch (Exception ignored) {}
         if (audioTrack != null) try { audioTrack.dispose(); } catch (Exception ignored) {}
         if (videoTrack != null) {
-            try { videoTrack.removeSink(null); } catch (Exception ignored) {}
+            if (telemetrySink != null) try { videoTrack.removeSink(telemetrySink); } catch (Exception ignored) {}
             try { videoTrack.dispose(); } catch (Exception ignored) {}
         }
         videoSender = null;
