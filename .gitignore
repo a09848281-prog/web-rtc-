@@ -1,0 +1,14 @@
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+android/app/google-services.json
+google-services.json
+*.jks
+*.keystore
+keystore.properties
+web/config.local.js
