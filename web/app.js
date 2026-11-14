@@ -802,9 +802,15 @@
 
   function sendSchedule() {
     try {
+      const days = Array.from(document.querySelectorAll('input[name="scheduleDay"]:checked'))
+        .map(input => input.value);
+      if ($("scheduleEnabled").checked && days.length === 0) {
+        setStatus("スケジュールを有効にする場合は曜日を1つ以上選択してください。");
+        return;
+      }
       sendControl("SET_SCHEDULE", {
         enabled: $("scheduleEnabled").checked,
-        days: $("scheduleDays").value,
+        days,
         start: $("scheduleStart").value,
         end: $("scheduleEnd").value
       });
