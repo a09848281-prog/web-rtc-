@@ -105,11 +105,14 @@ function heartbeat_(sh,p){
 function poll_(sh,p){
   const row=authRow_(sh,p),lock=LockService.getScriptLock();lock.waitLock(10000);
   try{
+    sh.getRange(row,6).setValue(new Date());sh.getRange(row,7).setValue("online");
+    const status=p.status&&typeof p.status==="object"?p.status:{};
+    sh.getRange(row,10).setValue(JSON.stringify(status).slice(0,4000));
     const raw=sh.getRange(row,8).getValue();
     if(raw)sh.getRange(row,8).clearContent();
     let command=null;
     if(raw){try{command=JSON.parse(String(raw));}catch(_){command={command:String(raw),payload:{}};}}
-    return {ok:true,command:command};
+    return {ok:true,command:command,serverTime:new Date().toISOString()};
   }finally{lock.releaseLock();}
 }
 function queue_(sh,p){
