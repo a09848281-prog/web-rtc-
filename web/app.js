@@ -21,6 +21,7 @@
     localMicTrack: null,
     pttHeld: false,
     muted: false,
+    androidMicMuted: false,
     mediaActive: false,
     statsTimer: null,
     darkTimer: null,
@@ -824,7 +825,19 @@
   $("muteRemote").addEventListener("click", () => {
     state.muted = !state.muted;
     video.muted = state.muted;
-    $("muteRemote").textContent = state.muted ? "🔇 音声ミュート解除" : "🔊 音声ミュート";
+    $("muteRemote").textContent = state.muted ? "🔇 受信音声ミュート解除" : "🔊 受信音声ミュート";
+  });
+  $("muteAndroidMic").addEventListener("click", () => {
+    state.androidMicMuted = !state.androidMicMuted;
+    try {
+      sendControl("SET_MIC_MUTE", { muted: state.androidMicMuted });
+      $("muteAndroidMic").textContent = state.androidMicMuted
+        ? "🎙 Androidマイクミュート解除" : "🎙 Androidマイクミュート";
+      setStatus(state.androidMicMuted ? "Androidマイクをミュートしました。" : "Androidマイクのミュートを解除しました。");
+    } catch (error) {
+      state.androidMicMuted = !state.androidMicMuted;
+      setStatus(error.message);
+    }
   });
   $("fullscreen").addEventListener("click", async () => {
     try {
