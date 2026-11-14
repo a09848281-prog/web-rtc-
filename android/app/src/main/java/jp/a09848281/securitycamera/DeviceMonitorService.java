@@ -59,12 +59,14 @@ public class DeviceMonitorService extends Service {
                 return;
             }
 
+            JSONObject deviceStatus = collectStatus();
             JSONObject request = new JSONObject();
             request.put("deviceId", id);
             request.put("deviceToken", token);
             request.put("action", "pollCommand");
-            request.put("status", collectStatus());
+            request.put("status", deviceStatus);
             JSONObject response = MainActivity.post(url, request);
+            checkBatteryWarning(deviceStatus);
             retrySeconds = 5;
 
             JSONObject command = response.optJSONObject("command");
@@ -188,6 +190,20 @@ public class DeviceMonitorService extends Service {
         return out;
     }
 
+    private void checkBatteryWarning(JSONObject status) {
+        try {
+            int level = status.optInt("batteryPct", 100);
+            SharedPreferences prefs = getSharedPreferences("wsc", MODE_PRIVATE);
+            boolean warned = prefs.getBoolean("lowBatteryWarned", false);
+            if (level <= 20 && !warned) {
+                prefs.edit().putBoolean("lowBatteryWarned", true).apply();
+                update("バッテリー残量が20%以下です。充電してください。", false);
+            } else if (level > 22 && warned) {
+                prefs.edit().putBoolean("lowBatteryWarned", false).apply();
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void checkThermalSafety() {
         if (Build.VERSION.SDK_INT < 29) return;
         try {
@@ -211,7 +227,17 @@ public class DeviceMonitorService extends Service {
             String raw = prefs.getString("schedule", "");
             if (raw.isEmpty()) return;
             JSONObject schedule = new JSONObject(raw);
-            if (!schedule.optBoolean("enabled", false)) return;
+            boolean enabled = schedule.optBoolean("enabled", false);
+            if (!enabled) {
+                if (prefs.getBoolean("scheduleActive", false)) {
+                    prefs.edit().putBoolean("scheduleActive", false).apply();
+                    Intent stop = new Intent(this, WebRtcSessionService.class);
+                    stop.setAction(WebRtcSessionService.ACTION_STOP);
+                    startService(stop);
+                    update("監視スケジュール終了。カメラ・マイクを停止しました。", false);
+                }
+                return;
+            }
             Calendar now = Calendar.getInstance();
             int day = now.get(Calendar.DAY_OF_WEEK);
             String days = schedule.optString("days", "everyday");
@@ -221,11 +247,16 @@ public class DeviceMonitorService extends Service {
             int current = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
             int from = parseMinutes(start), to = parseMinutes(end);
             boolean active = from < to ? current >= from && current < to : current >= from || current < to;
-            String date = now.get(Calendar.YEAR) + "-" + now.get(Calendar.DAY_OF_YEAR);
-            String last = prefs.getString("scheduleStartDate", "");
-            if (active && !date.equals(last)) {
-                prefs.edit().putString("scheduleStartDate", date).apply();
+            boolean wasActive = prefs.getBoolean("scheduleActive", false);
+            if (active && !wasActive) {
+                prefs.edit().putBoolean("scheduleActive", true).apply();
                 startMediaFromCommand();
+            } else if (!active && wasActive) {
+                prefs.edit().putBoolean("scheduleActive", false).apply();
+                Intent stop = new Intent(this, WebRtcSessionService.class);
+                stop.setAction(WebRtcSessionService.ACTION_STOP);
+                startService(stop);
+                update("監視スケジュールの終了時刻です。カメラ・マイクを停止しました。", false);
             }
         } catch (Exception ignored) {}
     }
